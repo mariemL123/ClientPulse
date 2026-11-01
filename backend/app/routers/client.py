@@ -4,9 +4,12 @@ from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.dependencies import get_current_user, require_admin
 from app.database import get_db
 from app.models.client import Client
+from app.models.user import User
 from app.schemas.client import ClientCreate, ClientResponse, ClientUpdate
+
 
 router = APIRouter(prefix="/api/clients", tags=["Clients"])
 
@@ -16,10 +19,16 @@ router = APIRouter(prefix="/api/clients", tags=["Clients"])
     response_model=ClientResponse,
     status_code=status.HTTP_201_CREATED,
 )
-def create_client(payload: ClientCreate, db: Session = Depends(get_db)):
-    existing = db.query(Client).filter(
-        Client.email == str(payload.email).lower()
-    ).first()
+def create_client(
+    payload: ClientCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Crée un client. Réservé aux utilisateurs authentifiés."""
+
+    email = str(payload.email).strip().lower()
+
+    existing = db.query(Client).filter(Client.email == email).first()
 
     if existing:
         raise HTTPException(
@@ -29,7 +38,7 @@ def create_client(payload: ClientCreate, db: Session = Depends(get_db)):
 
     client = Client(
         name=payload.name.strip(),
-        email=str(payload.email).lower(),
+        email=email,
         company=payload.company,
         phone=payload.phone,
         status=payload.status,
@@ -57,7 +66,10 @@ def list_clients(
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
+    """Liste les clients avec recherche, filtres et pagination."""
+
     query = db.query(Client)
 
     if search:
@@ -73,16 +85,28 @@ def list_clients(
     if client_status:
         if client_status not in {"active", "inactive", "prospect"}:
             raise HTTPException(
-                status_code=422,
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Statut invalide : active, inactive ou prospect.",
             )
+
         query = query.filter(Client.status == client_status)
 
-    return query.order_by(Client.id.desc()).offset(skip).limit(limit).all()
+    return (
+        query.order_by(Client.id.desc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
 
 
 @router.get("/{client_id}", response_model=ClientResponse)
-def get_client(client_id: int, db: Session = Depends(get_db)):
+def get_client(
+    client_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Consulte un client. Réservé aux utilisateurs authentifiés."""
+
     client = db.get(Client, client_id)
 
     if client is None:
@@ -99,7 +123,10 @@ def update_client(
     client_id: int,
     payload: ClientUpdate,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
+    """Modifie un client. Réservé aux utilisateurs authentifiés."""
+
     client = db.get(Client, client_id)
 
     if client is None:
@@ -122,6 +149,7 @@ def update_client(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Le nom ne peut pas être vide.",
             )
+
         changes["name"] = changes["name"].strip()
 
     if "email" in changes:
@@ -130,12 +158,17 @@ def update_client(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="L'email ne peut pas être nul.",
             )
-        changes["email"] = str(changes["email"]).lower()
 
-        duplicate = db.query(Client).filter(
-            Client.email == changes["email"],
-            Client.id != client_id,
-        ).first()
+        changes["email"] = str(changes["email"]).strip().lower()
+
+        duplicate = (
+            db.query(Client)
+            .filter(
+                Client.email == changes["email"],
+                Client.id != client_id,
+            )
+            .first()
+        )
 
         if duplicate:
             raise HTTPException(
@@ -163,7 +196,13 @@ def update_client(
     "/{client_id}",
     status_code=status.HTTP_204_NO_CONTENT,
 )
-def delete_client(client_id: int, db: Session = Depends(get_db)):
+def delete_client(
+    client_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """Supprime un client. Réservé aux administrateurs."""
+
     client = db.get(Client, client_id)
 
     if client is None:
@@ -174,4 +213,5 @@ def delete_client(client_id: int, db: Session = Depends(get_db)):
 
     db.delete(client)
     db.commit()
+
     return Response(status_code=status.HTTP_204_NO_CONTENT)

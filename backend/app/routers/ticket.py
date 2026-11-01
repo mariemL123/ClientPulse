@@ -6,9 +6,11 @@ from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.dependencies import get_current_user, require_admin
 from app.database import get_db
 from app.models.client import Client
 from app.models.ticket import Ticket
+from app.models.user import User
 from app.schemas.ticket import TicketCreate, TicketResponse, TicketUpdate
 
 
@@ -20,20 +22,23 @@ router = APIRouter(prefix="/api/tickets", tags=["Tickets"])
     response_model=TicketResponse,
     status_code=status.HTTP_201_CREATED,
 )
-def create_ticket(payload: TicketCreate, db: Session = Depends(get_db)):
+def create_ticket(
+    payload: TicketCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """Crée une réclamation associée à un client existant."""
 
     client = db.get(Client, payload.client_id)
 
     if client is None:
         raise HTTPException(
-            status_code=404,
+            status_code=status.HTTP_404_NOT_FOUND,
             detail="Le client associé à ce ticket est introuvable.",
         )
 
     ticket = Ticket(**payload.model_dump())
 
-    # Une date de résolution est nécessaire si le ticket est déjà résolu.
     if ticket.status == "resolved":
         ticket.resolved_at = datetime.now(timezone.utc)
 
@@ -45,7 +50,7 @@ def create_ticket(payload: TicketCreate, db: Session = Depends(get_db)):
     except IntegrityError:
         db.rollback()
         raise HTTPException(
-            status_code=409,
+            status_code=status.HTTP_409_CONFLICT,
             detail="Impossible de créer ce ticket.",
         )
 
@@ -61,6 +66,7 @@ def list_tickets(
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Retourne les tickets avec recherche, filtres et pagination."""
 
@@ -79,20 +85,24 @@ def list_tickets(
         allowed_statuses = {
             "open", "in_progress", "resolved", "closed"
         }
+
         if ticket_status not in allowed_statuses:
             raise HTTPException(
-                status_code=422,
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Statut de ticket invalide.",
             )
+
         query = query.filter(Ticket.status == ticket_status)
 
     if priority:
         allowed_priorities = {"low", "medium", "high", "urgent"}
+
         if priority not in allowed_priorities:
             raise HTTPException(
-                status_code=422,
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Priorité invalide.",
             )
+
         query = query.filter(Ticket.priority == priority)
 
     if client_id is not None:
@@ -107,14 +117,18 @@ def list_tickets(
 
 
 @router.get("/{ticket_id}", response_model=TicketResponse)
-def get_ticket(ticket_id: int, db: Session = Depends(get_db)):
+def get_ticket(
+    ticket_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """Retourne un ticket par son identifiant."""
 
     ticket = db.get(Ticket, ticket_id)
 
     if ticket is None:
         raise HTTPException(
-            status_code=404,
+            status_code=status.HTTP_404_NOT_FOUND,
             detail="Ticket introuvable.",
         )
 
@@ -126,6 +140,7 @@ def update_ticket(
     ticket_id: int,
     payload: TicketUpdate,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Modifie les informations d'un ticket."""
 
@@ -133,7 +148,7 @@ def update_ticket(
 
     if ticket is None:
         raise HTTPException(
-            status_code=404,
+            status_code=status.HTTP_404_NOT_FOUND,
             detail="Ticket introuvable.",
         )
 
@@ -141,16 +156,17 @@ def update_ticket(
 
     if not changes:
         raise HTTPException(
-            status_code=400,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail="Aucune modification fournie.",
         )
 
     if "title" in changes:
         if changes["title"] is None or not changes["title"].strip():
             raise HTTPException(
-                status_code=422,
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Le titre ne peut pas être vide.",
             )
+
         changes["title"] = changes["title"].strip()
 
     if "description" in changes:
@@ -159,9 +175,10 @@ def update_ticket(
             or not changes["description"].strip()
         ):
             raise HTTPException(
-                status_code=422,
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="La description ne peut pas être vide.",
             )
+
         changes["description"] = changes["description"].strip()
 
     if "assigned_to" in changes and changes["assigned_to"] is not None:
@@ -170,7 +187,7 @@ def update_ticket(
     if "status" in changes:
         if changes["status"] is None:
             raise HTTPException(
-                status_code=422,
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Le statut ne peut pas être nul.",
             )
 
@@ -190,7 +207,7 @@ def update_ticket(
     except IntegrityError:
         db.rollback()
         raise HTTPException(
-            status_code=409,
+            status_code=status.HTTP_409_CONFLICT,
             detail="Modification impossible.",
         )
 
@@ -201,14 +218,18 @@ def update_ticket(
     "/{ticket_id}",
     status_code=status.HTTP_204_NO_CONTENT,
 )
-def delete_ticket(ticket_id: int, db: Session = Depends(get_db)):
-    """Supprime un ticket."""
+def delete_ticket(
+    ticket_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """Supprime un ticket. Réservé aux administrateurs."""
 
     ticket = db.get(Ticket, ticket_id)
 
     if ticket is None:
         raise HTTPException(
-            status_code=404,
+            status_code=status.HTTP_404_NOT_FOUND,
             detail="Ticket introuvable.",
         )
 

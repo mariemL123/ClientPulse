@@ -3,9 +3,11 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.core.dependencies import get_current_user
 from app.database import get_db
 from app.models.client import Client
 from app.models.ticket import Ticket
+from app.models.user import User
 
 
 router = APIRouter(
@@ -15,8 +17,14 @@ router = APIRouter(
 
 
 @router.get("")
-def get_dashboard_statistics(db: Session = Depends(get_db)):
-    """Retourne les statistiques globales de ClientPulse."""
+def get_dashboard_statistics(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Retourne les statistiques globales de ClientPulse.
+
+    Réservé aux utilisateurs authentifiés : agents et administrateurs.
+    """
 
     # Nombre total de clients.
     total_clients = db.query(func.count(Client.id)).scalar() or 0

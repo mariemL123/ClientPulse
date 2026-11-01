@@ -3,7 +3,7 @@ from fastapi.testclient import TestClient
 
 
 def test_create_client(client: TestClient):
-    """Vérifie la création d'un client."""
+    """Un agent authentifié peut créer un client."""
 
     response = client.post(
         "/api/clients",
@@ -26,9 +26,9 @@ def test_create_client(client: TestClient):
 
 
 def test_list_clients(client: TestClient):
-    """Vérifie que la liste retourne les clients créés."""
+    """Un agent authentifié peut consulter la liste des clients."""
 
-    client.post(
+    create_response = client.post(
         "/api/clients",
         json={
             "name": "Client Liste",
@@ -36,6 +36,8 @@ def test_list_clients(client: TestClient):
             "status": "active",
         },
     )
+
+    assert create_response.status_code == 201
 
     response = client.get("/api/clients")
 
@@ -47,7 +49,7 @@ def test_list_clients(client: TestClient):
 
 
 def test_update_client(client: TestClient):
-    """Vérifie la modification d'un client."""
+    """Un agent authentifié peut modifier un client."""
 
     create_response = client.post(
         "/api/clients",
@@ -57,6 +59,8 @@ def test_update_client(client: TestClient):
             "status": "active",
         },
     )
+
+    assert create_response.status_code == 201
 
     client_id = create_response.json()["id"]
 
@@ -73,10 +77,10 @@ def test_update_client(client: TestClient):
     assert response.json()["status"] == "prospect"
 
 
-def test_delete_client(client: TestClient):
-    """Vérifie la suppression d'un client."""
+def test_delete_client(admin_client: TestClient):
+    """Seul un administrateur peut supprimer un client."""
 
-    create_response = client.post(
+    create_response = admin_client.post(
         "/api/clients",
         json={
             "name": "Client à supprimer",
@@ -85,18 +89,45 @@ def test_delete_client(client: TestClient):
         },
     )
 
+    assert create_response.status_code == 201
+
+    client_id = create_response.json()["id"]
+
+    response = admin_client.delete(f"/api/clients/{client_id}")
+
+    assert response.status_code == 204
+
+    get_response = admin_client.get(f"/api/clients/{client_id}")
+    assert get_response.status_code == 404
+
+
+def test_agent_cannot_delete_client(client: TestClient):
+    """Un agent ne peut pas supprimer un client."""
+
+    create_response = client.post(
+        "/api/clients",
+        json={
+            "name": "Client protégé",
+            "email": "protected@test.com",
+            "status": "active",
+        },
+    )
+
+    assert create_response.status_code == 201
+
     client_id = create_response.json()["id"]
 
     response = client.delete(f"/api/clients/{client_id}")
 
-    assert response.status_code == 204
+    assert response.status_code == 403
 
+    # Le client doit toujours exister.
     get_response = client.get(f"/api/clients/{client_id}")
-    assert get_response.status_code == 404
+    assert get_response.status_code == 200
 
 
 def test_duplicate_email(client: TestClient):
-    """Vérifie le refus d'une adresse email déjà utilisée."""
+    """Une adresse e-mail déjà utilisée doit être refusée."""
 
     payload = {
         "name": "Client Test",
@@ -109,3 +140,13 @@ def test_duplicate_email(client: TestClient):
 
     assert first_response.status_code == 201
     assert second_response.status_code == 409
+
+
+def test_unauthenticated_user_cannot_list_clients(
+    unauthenticated_client: TestClient,
+):
+    """Un utilisateur sans token ne peut pas consulter les clients."""
+
+    response = unauthenticated_client.get("/api/clients")
+
+    assert response.status_code == 401

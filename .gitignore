@@ -24,3 +24,7 @@ htmlcov/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Scripts locaux temporaires de gestion des comptes
+backend/promote_admin.py
+backend/reset_password.py
