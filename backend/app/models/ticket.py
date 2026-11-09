@@ -1,4 +1,3 @@
-
 from datetime import datetime, timezone
 
 from sqlalchemy import (
@@ -22,12 +21,14 @@ class Ticket(Base):
     id = Column(Integer, primary_key=True, index=True)
 
     title = Column(String(200), nullable=False, index=True)
+
     description = Column(Text, nullable=False)
 
     priority = Column(
         String(20),
         nullable=False,
         default="medium",
+        server_default="medium",
         index=True,
     )
 
@@ -35,6 +36,7 @@ class Ticket(Base):
         String(30),
         nullable=False,
         default="open",
+        server_default="open",
         index=True,
     )
 
@@ -68,30 +70,42 @@ class Ticket(Base):
 
     @validates("title")
     def validate_title(self, key, value):
+        """Vérifie et nettoie le titre du ticket."""
+        if not isinstance(value, str):
+            raise ValueError("Le titre doit être une chaîne de caractères.")
+
         value = value.strip()
+
         if not value:
             raise ValueError("Le titre du ticket est obligatoire.")
+
         return value
 
     @validates("priority")
     def validate_priority(self, key, value):
+        """Vérifie la priorité du ticket."""
         allowed = {"low", "medium", "high", "urgent"}
+
         if value not in allowed:
             raise ValueError(
                 "Priorité invalide : low, medium, high ou urgent."
             )
+
         return value
 
     @validates("status")
     def validate_status(self, key, value):
+        """Vérifie le statut du ticket."""
         allowed = {
             "open",
             "in_progress",
             "resolved",
             "closed",
         }
+
         if value not in allowed:
             raise ValueError(
                 "Statut invalide : open, in_progress, resolved ou closed."
             )
+
         return value

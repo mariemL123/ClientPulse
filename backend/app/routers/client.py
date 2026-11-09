@@ -22,9 +22,9 @@ router = APIRouter(prefix="/api/clients", tags=["Clients"])
 def create_client(
     payload: ClientCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin),
 ):
-    """Crée un client. Réservé aux utilisateurs authentifiés."""
+    """Crée un client. Réservé aux administrateurs."""
 
     email = str(payload.email).strip().lower()
 
@@ -123,9 +123,9 @@ def update_client(
     client_id: int,
     payload: ClientUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin),
 ):
-    """Modifie un client. Réservé aux utilisateurs authentifiés."""
+    """Modifie un client. Réservé aux administrateurs."""
 
     client = db.get(Client, client_id)
 
@@ -212,6 +212,14 @@ def delete_client(
         )
 
     db.delete(client)
-    db.commit()
+
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Impossible de supprimer ce client : des tickets lui sont associ?s.",
+        )
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -1,18 +1,17 @@
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_current_user
+from app.core.rate_limiter import limiter
 from app.core.security import (
     create_access_token,
-    hash_password,
     verify_password,
 )
 from app.database import get_db
 from app.models.user import User
 from app.schemas.user import (
     TokenResponse,
-    UserCreate,
     UserLogin,
     UserResponse,
 )
@@ -25,61 +24,20 @@ router = APIRouter(
 
 
 @router.post(
-    "/register",
-    response_model=UserResponse,
-    status_code=status.HTTP_201_CREATED,
-)
-def register(
-    user_data: UserCreate,
-    db: Session = Depends(get_db),
-):
-    """Crée un compte agent."""
-
-    email = str(user_data.email).strip().lower()
-
-    existing_user = (
-        db.query(User)
-        .filter(User.email == email)
-        .first()
-    )
-
-    if existing_user:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Cette adresse e-mail est déjà utilisée.",
-        )
-
-    user = User(
-        full_name=user_data.full_name,
-        email=email,
-        hashed_password=hash_password(user_data.password),
-        role="agent",
-    )
-
-    try:
-        db.add(user)
-        db.commit()
-        db.refresh(user)
-
-    except Exception:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Impossible de créer le compte.",
-        )
-
-    return user
-
-
-@router.post(
     "/login",
     response_model=TokenResponse,
 )
+@limiter.limit("5/minute")
 def login(
+    request: Request,
     credentials: UserLogin,
     db: Session = Depends(get_db),
 ):
-    """Authentifie un utilisateur et retourne un JWT."""
+    """
+    Authentifie un utilisateur actif et retourne un JWT.
+
+    Les administrateurs et les agents utilisent cette même route.
+    """
 
     email = str(credentials.email).strip().lower()
 
@@ -89,6 +47,7 @@ def login(
         .first()
     )
 
+    # Ne révèle pas si l'adresse e-mail ou le mot de passe est incorrect.
     if (
         user is None
         or not verify_password(
@@ -99,8 +58,10 @@ def login(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Adresse e-mail ou mot de passe incorrect.",
+            headers={"WWW-Authenticate": "Bearer"},
         )
 
+    # Un compte désactivé ne peut pas se connecter.
     if not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -122,6 +83,10 @@ def login(
 def get_my_profile(
     current_user: User = Depends(get_current_user),
 ):
-    """Retourne le profil de l'utilisateur connecté."""
+    """
+    Retourne les informations du compte connecté.
+
+    Le mot de passe et son hash ne sont jamais exposés.
+    """
 
     return current_user

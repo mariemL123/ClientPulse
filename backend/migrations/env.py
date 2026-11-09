@@ -7,7 +7,7 @@ from sqlalchemy import engine_from_config, pool
 from app.config import settings
 from app.database import Base
 
-# Importer tous les modèles pour les enregistrer dans Base.metadata.
+# Importer les modèles pour les enregistrer dans Base.metadata.
 from app.models.client import Client
 from app.models.ticket import Ticket
 from app.models.user import User
@@ -16,10 +16,11 @@ from app.models.user import User
 # Configuration Alembic.
 config = context.config
 
-# Utiliser l'URL définie dans les paramètres de l'application.
+# Utiliser exactement la même URL normalisée que SQLAlchemy.
+# Le remplacement de % évite les problèmes d'interpolation ConfigParser.
 config.set_main_option(
     "sqlalchemy.url",
-    settings.DATABASE_URL.replace("%", "%%"),
+    settings.database_url.replace("%", "%%"),
 )
 
 # Configurer les logs si le fichier INI le permet.
@@ -32,6 +33,7 @@ target_metadata = Base.metadata
 
 def run_migrations_offline() -> None:
     """Exécute les migrations sans créer de connexion DB."""
+
     url = config.get_main_option("sqlalchemy.url")
 
     context.configure(
@@ -48,6 +50,7 @@ def run_migrations_offline() -> None:
 
 def run_migrations_online() -> None:
     """Exécute les migrations avec une connexion DB active."""
+
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",

@@ -1,4 +1,3 @@
-
 from datetime import datetime, timezone
 
 from sqlalchemy import (
@@ -8,6 +7,7 @@ from sqlalchemy import (
     DateTime,
     Integer,
     String,
+    true,
 )
 from sqlalchemy.orm import validates
 
@@ -40,16 +40,19 @@ class User(Base):
     # Seul le hash Argon2 sera enregistré en base de données.
     hashed_password = Column(String(255), nullable=False)
 
+    # Valeur par défaut côté Python et directement dans la base SQL.
     role = Column(
         String(20),
         nullable=False,
         default="agent",
+        server_default="agent",
     )
 
     is_active = Column(
         Boolean,
         nullable=False,
         default=True,
+        server_default=true(),
     )
 
     created_at = Column(
@@ -60,6 +63,10 @@ class User(Base):
 
     @validates("full_name")
     def validate_full_name(self, key, value):
+        """Vérifie et nettoie le nom complet."""
+        if not isinstance(value, str):
+            raise ValueError("Le nom complet doit être une chaîne de caractères.")
+
         value = value.strip()
 
         if not value:
@@ -69,6 +76,10 @@ class User(Base):
 
     @validates("email")
     def validate_email(self, key, value):
+        """Normalise et vérifie l'adresse e-mail."""
+        if not isinstance(value, str):
+            raise ValueError("L'adresse e-mail doit être une chaîne de caractères.")
+
         value = value.strip().lower()
 
         if not value:
@@ -78,6 +89,7 @@ class User(Base):
 
     @validates("role")
     def validate_role(self, key, value):
+        """Limite les rôles aux valeurs autorisées."""
         allowed_roles = {"admin", "agent"}
 
         if value not in allowed_roles:

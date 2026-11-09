@@ -48,11 +48,20 @@ def get_dashboard_statistics(
             clients[status_name] = count
 
     # Nombre total de tickets.
-    total_tickets = db.query(func.count(Ticket.id)).scalar() or 0
+    # Les agents ne voient que les tickets qui leur sont affect?s.
+    ticket_query = db.query(Ticket)
+    if current_user.role == "agent":
+        ticket_query = ticket_query.filter(
+            Ticket.assigned_to == current_user.full_name
+        )
+
+    total_tickets = (
+        ticket_query.with_entities(func.count(Ticket.id)).scalar() or 0
+    )
 
     # Répartition des tickets par statut.
     ticket_statuses = (
-        db.query(Ticket.status, func.count(Ticket.id))
+        ticket_query.with_entities(Ticket.status, func.count(Ticket.id))
         .group_by(Ticket.status)
         .all()
     )
@@ -71,7 +80,7 @@ def get_dashboard_statistics(
 
     # Répartition des tickets par priorité.
     ticket_priorities = (
-        db.query(Ticket.priority, func.count(Ticket.id))
+        ticket_query.with_entities(Ticket.priority, func.count(Ticket.id))
         .group_by(Ticket.priority)
         .all()
     )

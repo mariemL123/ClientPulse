@@ -17,7 +17,7 @@ TicketStatus = Literal[
 
 class TicketBase(BaseModel):
     title: str = Field(min_length=3, max_length=200)
-    description: str = Field(min_length=5)
+    description: str = Field(min_length=5, max_length=10_000)
     priority: TicketPriority = "medium"
     status: TicketStatus = "open"
     client_id: int = Field(gt=0)
@@ -30,7 +30,7 @@ class TicketCreate(TicketBase):
 
 class TicketUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=3, max_length=200)
-    description: str | None = Field(default=None, min_length=5)
+    description: str | None = Field(default=None, min_length=5, max_length=10_000)
     priority: TicketPriority | None = None
     status: TicketStatus | None = None
     assigned_to: str | None = Field(default=None, max_length=120)

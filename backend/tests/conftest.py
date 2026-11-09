@@ -2,12 +2,13 @@
 import pytest
 
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.core.security import create_access_token, hash_password
-from app.database import Base, get_db
+from app.core.rate_limiter import limiter
+from app.database import Base, enable_sqlite_foreign_keys, get_db
 from app.main import app
 from app.models.user import User
 
@@ -21,6 +22,8 @@ test_engine = create_engine(
     poolclass=StaticPool,
 )
 
+event.listen(test_engine, "connect", enable_sqlite_foreign_keys)
+
 TestingSessionLocal = sessionmaker(
     autocommit=False,
     autoflush=False,
@@ -32,6 +35,7 @@ TestingSessionLocal = sessionmaker(
 def test_environment():
     """Prépare une base isolée et remplace la dépendance get_db."""
 
+    limiter.reset()
     Base.metadata.create_all(bind=test_engine)
 
     def override_get_db():
@@ -45,8 +49,20 @@ def test_environment():
 
     yield
 
+    limiter.reset()
     app.dependency_overrides.clear()
     Base.metadata.drop_all(bind=test_engine)
+
+
+@pytest.fixture()
+def test_db(test_environment):
+    """Fournit une session SQLAlchemy sur la base de test isol?e."""
+
+    db = TestingSessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
 
 def create_authenticated_client(role: str) -> TestClient:

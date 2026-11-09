@@ -1,4 +1,6 @@
 
+"""Routes de gestion des tickets avec contrôle d'accès par rôle."""
+
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
@@ -17,6 +19,49 @@ from app.schemas.ticket import TicketCreate, TicketResponse, TicketUpdate
 router = APIRouter(prefix="/api/tickets", tags=["Tickets"])
 
 
+def ensure_ticket_access(ticket: Ticket, user: User) -> None:
+    """Un agent ne peut accéder qu'à ses propres tickets."""
+
+    if user.role == "agent" and ticket.assigned_to != user.full_name:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Ticket introuvable.",
+        )
+
+
+def validate_assignment(assigned_to: str | None, db: Session) -> str | None:
+    """Vérifie que le responsable est un agent actif existant."""
+
+    if assigned_to is None or not assigned_to.strip():
+        return None
+
+    name = assigned_to.strip()
+
+    agents = (
+        db.query(User)
+        .filter(
+            User.full_name == name,
+            User.role == "agent",
+            User.is_active.is_(True),
+        )
+        .all()
+    )
+
+    if len(agents) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Le responsable doit être un agent actif existant.",
+        )
+
+    if len(agents) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Plusieurs agents portent ce nom. Affectation ambiguë.",
+        )
+
+    return agents[0].full_name
+
+
 @router.post(
     "",
     response_model=TicketResponse,
@@ -27,7 +72,7 @@ def create_ticket(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Crée une réclamation associée à un client existant."""
+    """Crée un ticket. Un agent ne peut l'affecter qu'à lui-même."""
 
     client = db.get(Client, payload.client_id)
 
@@ -37,7 +82,29 @@ def create_ticket(
             detail="Le client associé à ce ticket est introuvable.",
         )
 
-    ticket = Ticket(**payload.model_dump())
+    data = payload.model_dump()
+
+    if current_user.role == "agent":
+        requested_assignee = data.get("assigned_to")
+
+        if (
+            requested_assignee is not None
+            and requested_assignee.strip() != current_user.full_name
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Un agent ne peut pas affecter un ticket à un autre utilisateur.",
+            )
+
+        data["assigned_to"] = current_user.full_name
+
+    else:
+        data["assigned_to"] = validate_assignment(
+            data.get("assigned_to"),
+            db,
+        )
+
+    ticket = Ticket(**data)
 
     if ticket.status == "resolved":
         ticket.resolved_at = datetime.now(timezone.utc)
@@ -68,9 +135,14 @@ def list_tickets(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Retourne les tickets avec recherche, filtres et pagination."""
+    """Liste les tickets accessibles à l'utilisateur connecté."""
 
     query = db.query(Ticket)
+
+    if current_user.role == "agent":
+        query = query.filter(
+            Ticket.assigned_to == current_user.full_name
+        )
 
     if search:
         term = f"%{search.strip()}%"
@@ -122,7 +194,7 @@ def get_ticket(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Retourne un ticket par son identifiant."""
+    """Retourne un ticket après vérification des droits d'accès."""
 
     ticket = db.get(Ticket, ticket_id)
 
@@ -131,6 +203,8 @@ def get_ticket(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Ticket introuvable.",
         )
+
+    ensure_ticket_access(ticket, current_user)
 
     return ticket
 
@@ -142,7 +216,7 @@ def update_ticket(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Modifie les informations d'un ticket."""
+    """Modifie un ticket selon les permissions de l'utilisateur."""
 
     ticket = db.get(Ticket, ticket_id)
 
@@ -152,6 +226,8 @@ def update_ticket(
             detail="Ticket introuvable.",
         )
 
+    ensure_ticket_access(ticket, current_user)
+
     changes = payload.model_dump(exclude_unset=True)
 
     if not changes:
@@ -160,13 +236,23 @@ def update_ticket(
             detail="Aucune modification fournie.",
         )
 
+    # Un agent peut uniquement modifier le statut et la priorité.
+    if current_user.role == "agent":
+        allowed_fields = {"status", "priority"}
+        forbidden_fields = set(changes) - allowed_fields
+
+        if forbidden_fields:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Un agent ne peut modifier que le statut et la priorité.",
+            )
+
     if "title" in changes:
         if changes["title"] is None or not changes["title"].strip():
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Le titre ne peut pas être vide.",
             )
-
         changes["title"] = changes["title"].strip()
 
     if "description" in changes:
@@ -178,11 +264,14 @@ def update_ticket(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="La description ne peut pas être vide.",
             )
-
         changes["description"] = changes["description"].strip()
 
-    if "assigned_to" in changes and changes["assigned_to"] is not None:
-        changes["assigned_to"] = changes["assigned_to"].strip() or None
+    # Seul un administrateur peut modifier l'affectation.
+    if "assigned_to" in changes:
+        changes["assigned_to"] = validate_assignment(
+            changes["assigned_to"],
+            db,
+        )
 
     if "status" in changes:
         if changes["status"] is None:
@@ -197,6 +286,12 @@ def update_ticket(
 
         elif ticket.status == "resolved":
             ticket.resolved_at = None
+
+    if "priority" in changes and changes["priority"] is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="La priorité ne peut pas être nulle.",
+        )
 
     for field, value in changes.items():
         setattr(ticket, field, value)
@@ -234,6 +329,14 @@ def delete_ticket(
         )
 
     db.delete(ticket)
-    db.commit()
+
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Impossible de supprimer ce ticket.",
+        )
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)

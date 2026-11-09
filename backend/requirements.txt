@@ -1,4 +1,4 @@
-﻿# API et serveur
+# API et serveur
 fastapi==0.162.0
 uvicorn[standard]==0.54.0
 
@@ -17,6 +17,7 @@ python-multipart==0.0.32
 # Authentification et sécurité
 python-jose[cryptography]==3.5.0
 pwdlib[argon2]==0.3.1
+slowapi==0.1.10
 
 # Tests
 pytest==9.2.0

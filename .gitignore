@@ -1,4 +1,4 @@
-# Variables d'environnement et secrets
+﻿# Variables d'environnement et secrets
 .env
 .env.*
 !.env.example
@@ -28,3 +28,16 @@ Thumbs.db
 # Scripts locaux temporaires de gestion des comptes
 backend/promote_admin.py
 backend/reset_password.py
+
+# Fichiers temporaires et sauvegardes
+*.bak
+*.tmp
+*.log
+*.before-cors-fix
+backups/
+
+# Identifiants administrateur locaux
+backend/app/routers/DataAdmin.txt
+
+# Sauvegardes CSP temporaires
+*.csp-backup
