@@ -4,9 +4,10 @@ from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import get_current_user, require_admin
+from app.core.dependencies import get_fully_authenticated_user, require_admin
 from app.database import get_db
 from app.models.client import Client
+from app.models.ticket import Ticket
 from app.models.user import User
 from app.schemas.client import ClientCreate, ClientResponse, ClientUpdate
 
@@ -66,11 +67,19 @@ def list_clients(
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_fully_authenticated_user),
 ):
     """Liste les clients avec recherche, filtres et pagination."""
 
     query = db.query(Client)
+
+    # Un agent ne voit que les clients associ?s ? ses propres tickets.
+    if current_user.role == "agent":
+        assigned_client_ids = (
+            db.query(Ticket.client_id)
+            .filter(Ticket.assigned_to == current_user.full_name)
+        )
+        query = query.filter(Client.id.in_(assigned_client_ids))
 
     if search:
         term = f"%{search.strip()}%"
@@ -103,11 +112,21 @@ def list_clients(
 def get_client(
     client_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_fully_authenticated_user),
 ):
-    """Consulte un client. Réservé aux utilisateurs authentifiés."""
+    """Consulte un client selon les droits de l'utilisateur."""
 
-    client = db.get(Client, client_id)
+    query = db.query(Client).filter(Client.id == client_id)
+
+    # Un agent ne peut consulter que les clients de ses propres tickets.
+    if current_user.role == "agent":
+        assigned_client_ids = (
+            db.query(Ticket.client_id)
+            .filter(Ticket.assigned_to == current_user.full_name)
+        )
+        query = query.filter(Client.id.in_(assigned_client_ids))
+
+    client = query.first()
 
     if client is None:
         raise HTTPException(

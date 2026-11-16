@@ -42,8 +42,11 @@ class UserUpdate(BaseModel):
 
         if self.full_name is not None:
             self.full_name = self.full_name.strip()
+
             if len(self.full_name) < 2:
-                raise ValueError("Le nom complet doit contenir au moins 2 caractères.")
+                raise ValueError(
+                    "Le nom complet doit contenir au moins 2 caractères."
+                )
 
         if self.email is not None:
             self.email = str(self.email).strip().lower()
@@ -59,6 +62,8 @@ class UserResponse(BaseModel):
     email: EmailStr
     role: str
     is_active: bool
+    must_change_password: bool
+    avatar_url: str | None = None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
@@ -75,3 +80,31 @@ class TokenResponse(BaseModel):
 
     access_token: str
     token_type: str = "bearer"
+
+
+class ChangePasswordRequest(BaseModel):
+    """Données nécessaires au changement du mot de passe."""
+
+    current_password: str = Field(min_length=8, max_length=128)
+    new_password: str = Field(min_length=8, max_length=128)
+    confirm_password: str = Field(min_length=8, max_length=128)
+
+    @model_validator(mode="after")
+    def validate_passwords(self):
+        if self.new_password != self.confirm_password:
+            raise ValueError(
+                "Les nouveaux mots de passe ne correspondent pas."
+            )
+
+        if self.new_password == self.current_password:
+            raise ValueError(
+                "Le nouveau mot de passe doit être différent de l'ancien."
+            )
+
+        return self
+
+
+class PasswordResetResponse(BaseModel):
+    """Mot de passe temporaire communiqué une seule fois à l'administrateur."""
+
+    temporary_password: str

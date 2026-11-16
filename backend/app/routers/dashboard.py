@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import get_current_user
+from app.core.dependencies import get_fully_authenticated_user
 from app.database import get_db
 from app.models.client import Client
 from app.models.ticket import Ticket
@@ -19,19 +19,29 @@ router = APIRouter(
 @router.get("")
 def get_dashboard_statistics(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_fully_authenticated_user),
 ):
-    """Retourne les statistiques globales de ClientPulse.
+    """Retourne les statistiques adaptées au rôle de l'utilisateur."""
 
-    Réservé aux utilisateurs authentifiés : agents et administrateurs.
-    """
+    # Les agents ne voient que les clients associés à leurs tickets.
+    client_query = db.query(Client)
 
-    # Nombre total de clients.
-    total_clients = db.query(func.count(Client.id)).scalar() or 0
+    if current_user.role == "agent":
+        assigned_client_ids = (
+            db.query(Ticket.client_id)
+            .filter(Ticket.assigned_to == current_user.full_name)
+            .distinct()
+        )
+        client_query = client_query.filter(Client.id.in_(assigned_client_ids))
 
-    # Répartition des clients par statut.
+    # Nombre de clients visibles.
+    total_clients = (
+        client_query.with_entities(func.count(Client.id)).scalar() or 0
+    )
+
+    # Répartition des clients visibles par statut.
     client_statuses = (
-        db.query(Client.status, func.count(Client.id))
+        client_query.with_entities(Client.status, func.count(Client.id))
         .group_by(Client.status)
         .all()
     )
@@ -47,14 +57,15 @@ def get_dashboard_statistics(
         if status_name in clients:
             clients[status_name] = count
 
-    # Nombre total de tickets.
-    # Les agents ne voient que les tickets qui leur sont affect?s.
+    # Les agents ne voient que leurs propres tickets.
     ticket_query = db.query(Ticket)
+
     if current_user.role == "agent":
         ticket_query = ticket_query.filter(
             Ticket.assigned_to == current_user.full_name
         )
 
+    # Nombre total de tickets visibles.
     total_tickets = (
         ticket_query.with_entities(func.count(Ticket.id)).scalar() or 0
     )
@@ -96,7 +107,7 @@ def get_dashboard_statistics(
         if priority_name in priorities:
             priorities[priority_name] = count
 
-    # Calcul du taux de résolution.
+    # Calcul du taux de résolution sur les tickets visibles.
     resolution_rate = (
         round(
             (tickets["resolved"] + tickets["closed"])

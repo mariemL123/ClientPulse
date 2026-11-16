@@ -41,3 +41,9 @@ backend/app/routers/DataAdmin.txt
 
 # Sauvegardes CSP temporaires
 *.csp-backup
+
+# Fichiers téléversés par les utilisateurs
+backend/storage/
+
+# Script de test local temporaire hors du projet
+test-auth-service.mts

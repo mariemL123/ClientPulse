@@ -13,7 +13,9 @@ export type User = {
   email: string
   role: 'admin' | 'agent'
   is_active: boolean
+  must_change_password: boolean
   created_at: string
+  avatar_url: string | null
 }
 
 export type UserCreate = {
@@ -29,6 +31,10 @@ export type UserUpdate = {
 
 export type UserStatusUpdate = {
   is_active: boolean
+}
+
+export type PasswordResetResponse = {
+  temporary_password: string
 }
 
 // Informations complÃ©mentaires en cas de suppression nÃ©cessitant
@@ -173,6 +179,28 @@ export async function getCurrentUser(): Promise<User> {
   return request<User>('/api/auth/me')
 }
 
+/**
+ * Change le mot de passe et remplace le JWT par le nouveau token.
+ */
+export async function changePassword(
+  currentPassword: string,
+  newPassword: string,
+  confirmPassword: string,
+): Promise<User> {
+  const result = await request<LoginResponse>('/api/auth/change-password', {
+    method: 'POST',
+    body: JSON.stringify({
+      current_password: currentPassword,
+      new_password: newPassword,
+      confirm_password: confirmPassword,
+    }),
+  })
+
+  sessionStorage.setItem(TOKEN_KEY, result.access_token)
+
+  return getCurrentUser()
+}
+
 export function logout(): void {
   sessionStorage.removeItem(TOKEN_KEY)
 }
@@ -187,7 +215,12 @@ async function request<T>(
 ): Promise<T> {
   const headers = new Headers(options.headers)
 
-  if (options.body && !headers.has('Content-Type')) {
+  // Le navigateur d?finit lui-m?me le Content-Type multipart et sa boundary.
+  if (
+    options.body &&
+    !(options.body instanceof FormData) &&
+    !headers.has('Content-Type')
+  ) {
     headers.set('Content-Type', 'application/json')
   }
 
@@ -321,6 +354,23 @@ export async function updateUser(
     method: 'PATCH',
     body: JSON.stringify(changes),
   })
+}
+
+/**
+ * Réinitialise le mot de passe d'un utilisateur.
+ * Le mot de passe temporaire est retourné une seule fois par le backend.
+ */
+export async function resetUserPassword(
+  userId: number,
+): Promise<PasswordResetResponse> {
+  if (!Number.isInteger(userId) || userId <= 0) {
+    throw new ApiError('Identifiant utilisateur invalide.', 400)
+  }
+
+  return request<PasswordResetResponse>(
+    `/api/users/${userId}/password/reset`,
+    { method: 'POST' },
+  )
 }
 
 export async function updateUserStatus(
@@ -493,4 +543,98 @@ export async function deleteTicket(
   return request<void>(`/api/tickets/${ticketId}`, {
     method: 'DELETE',
   })
+}
+
+// ============================================================
+// AVATARS UTILISATEURS
+// ============================================================
+
+/**
+ * T?l?verse ou remplace l'avatar de l'utilisateur connect?.
+ * Le navigateur construit automatiquement l'en-t?te multipart.
+ */
+export async function uploadMyAvatar(file: File): Promise<User> {
+  if (!(file instanceof File) || file.size === 0) {
+    throw new ApiError('Fichier avatar invalide.', 400)
+  }
+
+  const formData = new FormData()
+  formData.append('file', file)
+
+  return request<User>('/api/auth/me/avatar', {
+    method: 'PUT',
+    body: formData,
+  })
+}
+
+/**
+ * Supprime uniquement l'avatar de l'utilisateur connect?.
+ */
+export async function deleteMyAvatar(): Promise<void> {
+  return request<void>('/api/auth/me/avatar', {
+    method: 'DELETE',
+  })
+}
+
+/**
+ * R?cup?re l'image d'un utilisateur avec authentification JWT.
+ * L'endpoint reste prot?g? : aucune URL publique n'est expos?e.
+ */
+export async function getUserAvatarBlob(userId: number): Promise<Blob> {
+  if (!Number.isInteger(userId) || userId <= 0) {
+    throw new ApiError('Identifiant utilisateur invalide.', 400)
+  }
+
+  const token = getToken()
+
+  if (!token) {
+    throw new ApiError('Session invalide. Veuillez vous reconnecter.', 401)
+  }
+
+  let response: Response
+
+  try {
+    response = await fetch(
+      `${API_BASE_URL}/api/auth/users/${userId}/avatar`,
+      {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      },
+    )
+  } catch {
+    throw new ApiError(
+      'Impossible de r?cup?rer l?avatar depuis le serveur ClientPulse.',
+      0,
+    )
+  }
+
+  if (!response.ok) {
+    if (response.status === 401) {
+      logout()
+      window.dispatchEvent(new Event('clientpulse:unauthorized'))
+    }
+
+    let message = `Impossible de charger l?avatar (HTTP ${response.status}).`
+
+    try {
+      const data: unknown = await response.json()
+
+      if (
+        typeof data === 'object' &&
+        data !== null &&
+        'detail' in data &&
+        typeof data.detail === 'string'
+      ) {
+        message = data.detail
+      }
+    } catch {
+      // Une r?ponse d'erreur peut ne pas contenir de JSON.
+    }
+
+    throw new ApiError(message, response.status)
+  }
+
+  return response.blob()
 }

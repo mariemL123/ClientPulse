@@ -32,30 +32,55 @@ def test_agent_cannot_create_client(client: TestClient):
     assert response.status_code == 403
 
 
-def test_agent_can_list_all_clients(
+
+def test_agent_can_list_only_assigned_clients(
     admin_client: TestClient,
     client: TestClient,
 ):
-    """Un agent peut consulter tous les clients."""
+    """Un agent ne voit que les clients de ses propres tickets."""
 
-    create_response = admin_client.post(
+    assigned_response = admin_client.post(
         "/api/clients",
         json=CLIENT_PAYLOAD,
     )
-    assert create_response.status_code == 201
+    assert assigned_response.status_code == 201
+
+    unassigned_payload = {
+        **CLIENT_PAYLOAD,
+        "name": "Client Non Affect?",
+        "email": "non-affecte@test.com",
+    }
+    unassigned_response = admin_client.post(
+        "/api/clients",
+        json=unassigned_payload,
+    )
+    assert unassigned_response.status_code == 201
+
+    ticket_response = client.post(
+        "/api/tickets",
+        json={
+            "title": "Ticket de l'agent",
+            "description": "Ticket associ? au premier client.",
+            "priority": "high",
+            "status": "open",
+            "client_id": assigned_response.json()["id"],
+        },
+    )
+    assert ticket_response.status_code == 201, ticket_response.text
 
     response = client.get("/api/clients")
 
     assert response.status_code == 200
-    assert len(response.json()) == 1
-    assert response.json()[0]["name"] == "Entreprise Test"
+    data = response.json()
+    assert len(data) == 1
+    assert data[0]["id"] == assigned_response.json()["id"]
 
 
-def test_agent_can_get_client(
+def test_agent_can_get_client_with_assigned_ticket(
     admin_client: TestClient,
     client: TestClient,
 ):
-    """Un agent peut consulter la fiche d'un client."""
+    """Un agent peut consulter un client associ? ? son ticket."""
 
     create_response = admin_client.post(
         "/api/clients",
@@ -64,10 +89,64 @@ def test_agent_can_get_client(
     assert create_response.status_code == 201
 
     client_id = create_response.json()["id"]
+
+    ticket_response = client.post(
+        "/api/tickets",
+        json={
+            "title": "Ticket associ?",
+            "description": "Ticket affect? ? l'agent.",
+            "priority": "medium",
+            "status": "open",
+            "client_id": client_id,
+        },
+    )
+    assert ticket_response.status_code == 201, ticket_response.text
+
     response = client.get(f"/api/clients/{client_id}")
 
     assert response.status_code == 200
     assert response.json()["id"] == client_id
+
+
+def test_agent_cannot_get_client_without_assigned_ticket(
+    admin_client: TestClient,
+    client: TestClient,
+):
+    """Un agent ne peut pas consulter un client non associ?."""
+
+    create_response = admin_client.post(
+        "/api/clients",
+        json=CLIENT_PAYLOAD,
+    )
+    assert create_response.status_code == 201
+
+    client_id = create_response.json()["id"]
+
+    response = client.get(f"/api/clients/{client_id}")
+
+    assert response.status_code == 404
+
+def test_admin_can_list_all_clients(admin_client: TestClient):
+    """Un administrateur peut consulter tous les clients."""
+
+    first = admin_client.post(
+        "/api/clients",
+        json=CLIENT_PAYLOAD,
+    )
+    assert first.status_code == 201
+
+    second_payload = {
+        **CLIENT_PAYLOAD,
+        "name": "Deuxi?me Client",
+        "email": "deuxieme@test.com",
+    }
+    second = admin_client.post("/api/clients", json=second_payload)
+    assert second.status_code == 201
+
+    response = admin_client.get("/api/clients")
+
+    assert response.status_code == 200
+    assert len(response.json()) == 2
 
 
 def test_admin_can_update_client(admin_client: TestClient):
@@ -140,6 +219,7 @@ def test_admin_can_delete_client(admin_client: TestClient):
     assert verification.status_code == 404
 
 
+
 def test_agent_cannot_delete_client(
     admin_client: TestClient,
     client: TestClient,
@@ -157,10 +237,9 @@ def test_agent_cannot_delete_client(
     response = client.delete(f"/api/clients/{client_id}")
     assert response.status_code == 403
 
-    # Le client doit toujours être consultable.
-    verification = client.get(f"/api/clients/{client_id}")
+    # L'administrateur confirme que le client existe toujours.
+    verification = admin_client.get(f"/api/clients/{client_id}")
     assert verification.status_code == 200
-
 
 def test_duplicate_email(admin_client: TestClient):
     """Une adresse e-mail déjà utilisée doit être refusée."""

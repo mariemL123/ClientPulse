@@ -38,14 +38,22 @@ def verify_password(
     )
 
 
+
 def create_access_token(
     subject: str,
     expires_minutes: int | None = None,
+    token_version: int = 0,
 ) -> str:
-    """Génère un JWT signé avec une date d'expiration."""
+    """Génère un JWT signé avec expiration et version de sécurité."""
 
     if not subject:
         raise ValueError("Le sujet du token est obligatoire.")
+
+    if isinstance(token_version, bool) or not isinstance(token_version, int):
+        raise ValueError("La version du token doit être un entier.")
+
+    if token_version < 0:
+        raise ValueError("La version du token ne peut pas être négative.")
 
     duration = (
         expires_minutes
@@ -60,6 +68,7 @@ def create_access_token(
 
     payload = {
         "sub": subject,
+        "ver": token_version,
         "iat": now,
         "exp": now + timedelta(minutes=duration),
     }

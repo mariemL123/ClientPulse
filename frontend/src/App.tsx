@@ -1,16 +1,18 @@
-﻿import { lazy, Suspense, useEffect, useMemo, useState, type FormEvent } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useState, type FormEvent } from 'react'
 import {
   Activity, ArrowDownRight, ArrowUpRight, Bell, CalendarDays,
   ChevronDown, ClipboardList, LayoutDashboard, LogOut, Menu,
   MessageSquare, Plus, Search, ShieldCheck, Users, X, Pencil,
-  Trash2, RefreshCw,
+  Trash2, RefreshCw, KeyRound, Copy,
 } from 'lucide-react'
 import {
   ApiError,
   createClient, updateClient, deleteClient, getClients,
-  getCurrentUser, getDashboard, getTickets, createTicket,
+  getCurrentUser, getDashboard, getTickets, createTicket, getUserAvatarBlob,
+  uploadMyAvatar, deleteMyAvatar,
   updateTicket, deleteTicket, login, logout, getUsers,
   createUser, updateUserStatus, updateUser, deleteUser,
+  changePassword, resetUserPassword,
   type Client, type ClientCreate, type ClientUpdate,
   type DashboardStatistics, type Ticket, type TicketCreate,
   type TicketUpdate, type User, type UserCreate, type UserUpdate,
@@ -58,6 +60,80 @@ const dangerButton =
 function initials(name: string): string {
   return name.trim().split(/\s+/).slice(0, 2)
     .map((part) => part[0] ?? '').join('').toUpperCase() || 'CL'
+}
+
+type UserAvatarProps = {
+  user: Pick<User, 'id' | 'full_name' | 'avatar_url'>
+  className?: string
+  refreshKey?: number
+}
+
+// Charge l'avatar avec authentification et lib?re l'URL temporaire.
+function UserAvatar({
+  user,
+  className = 'flex h-9 w-9 items-center justify-center rounded-full bg-blue-100 text-xs font-bold text-blue-700',
+  refreshKey = 0,
+}: UserAvatarProps) {
+  const avatarUrl = user.avatar_url
+
+  const [loadedAvatar, setLoadedAvatar] = useState<{
+    avatarUrl: string
+    refreshKey: number
+    objectUrl: string
+  } | null>(null)
+
+  useEffect(() => {
+    let active = true
+    let objectUrl: string | null = null
+
+    if (!avatarUrl) {
+      return () => {
+        active = false
+      }
+    }
+
+    getUserAvatarBlob(user.id)
+      .then((blob) => {
+        if (!active) return
+
+        objectUrl = URL.createObjectURL(blob)
+        setLoadedAvatar({
+          avatarUrl,
+          refreshKey,
+          objectUrl,
+        })
+      })
+      .catch(() => {
+        if (active) setLoadedAvatar(null)
+      })
+
+    return () => {
+      active = false
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
+  }, [user.id, avatarUrl, refreshKey])
+
+  const imageSrc =
+    loadedAvatar?.avatarUrl === avatarUrl &&
+    loadedAvatar.refreshKey === refreshKey
+      ? loadedAvatar.objectUrl
+      : null
+
+  if (imageSrc) {
+    return (
+      <img
+        src={imageSrc}
+        alt={`Avatar de ${user.full_name}`}
+        className={`${className} object-cover`}
+      />
+    )
+  }
+
+  return (
+    <div className={className} aria-label={`Initiales de ${user.full_name}`}>
+      {initials(user.full_name)}
+    </div>
+  )
 }
 
 function formatDate(value: string): string {
@@ -205,7 +281,7 @@ function LoginScreen({
         </div>
 
         <h2 className="text-xl font-bold text-slate-900">Bienvenue</h2>
-        <p className="mt-1 text-sm text-slate-500">Connectez-vous à votre espace de travail.</p>
+        <p className="mt-1 text-sm text-slate-500">Connectez-vous à  votre espace de travail.</p>
 
         <form onSubmit={handleSubmit} className="mt-7 space-y-5">
           <div>
@@ -248,7 +324,7 @@ function LoginScreen({
         </form>
 
         <p className="mt-6 text-center text-xs text-slate-400">
-          Accès sécurisé à votre espace ClientPulse
+          Accès sécurisé à  votre espace ClientPulse
         </p>
       </section>
     </main>
@@ -623,7 +699,7 @@ function TicketForm({
 
         {!isAdmin && !ticket && (
           <p className="rounded-xl bg-blue-50 p-3 text-xs text-blue-700">
-            Ce ticket sera automatiquement affecté à votre compte : {currentUser.full_name}.
+            Ce ticket sera automatiquement affecté à  votre compte : {currentUser.full_name}.
           </p>
         )}
 
@@ -641,6 +717,154 @@ function TicketForm({
 }
 
 // ============================================================
+function PasswordChangeScreen({
+  user,
+  onSubmit,
+  onLogout,
+}: {
+  user: User
+  onSubmit: (
+    currentPassword: string,
+    newPassword: string,
+    confirmPassword: string,
+  ) => Promise<void>
+  onLogout: () => void
+}) {
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setError('')
+
+    if (newPassword.length < 8) {
+      setError('Le nouveau mot de passe doit contenir au moins 8 caractères.')
+      return
+    }
+
+    if (newPassword !== confirmPassword) {
+      setError('Les deux nouveaux mots de passe ne correspondent pas.')
+      return
+    }
+
+    if (currentPassword === newPassword) {
+      setError('Le nouveau mot de passe doit être différent de l’ancien.')
+      return
+    }
+
+    setLoading(true)
+
+    try {
+      await onSubmit(currentPassword, newPassword, confirmPassword)
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : 'Impossible de modifier le mot de passe.',
+      )
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <main className="flex min-h-screen items-center justify-center bg-slate-50 px-4 py-10">
+      <section className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-xl sm:p-8">
+        <div className="mb-6 flex h-14 w-14 items-center justify-center rounded-2xl bg-blue-50 text-blue-600">
+          <KeyRound size={28} />
+        </div>
+
+        <h1 className="text-2xl font-bold text-slate-900">
+          Changement du mot de passe
+        </h1>
+
+        <p className="mt-2 text-sm leading-6 text-slate-600">
+          Bonjour {user.full_name}. Pour sécuriser votre compte,
+          vous devez définir un nouveau mot de passe avant de continuer.
+        </p>
+
+        <p className="mt-3 break-all text-sm font-medium text-slate-500">
+          {user.email}
+        </p>
+
+        <form onSubmit={handleSubmit} className="mt-6 space-y-4">
+          <div>
+            <label className="mb-1 block text-sm font-medium">
+              Mot de passe temporaire actuel
+            </label>
+            <input
+              type="password"
+              autoComplete="current-password"
+              className={inputClass}
+              value={currentPassword}
+              onChange={(event) => setCurrentPassword(event.target.value)}
+              required
+              disabled={loading}
+            />
+          </div>
+
+          <div>
+            <label className="mb-1 block text-sm font-medium">
+              Nouveau mot de passe
+            </label>
+            <input
+              type="password"
+              autoComplete="new-password"
+              className={inputClass}
+              value={newPassword}
+              onChange={(event) => setNewPassword(event.target.value)}
+              minLength={8}
+              required
+              disabled={loading}
+            />
+          </div>
+
+          <div>
+            <label className="mb-1 block text-sm font-medium">
+              Confirmer le nouveau mot de passe
+            </label>
+            <input
+              type="password"
+              autoComplete="new-password"
+              className={inputClass}
+              value={confirmPassword}
+              onChange={(event) => setConfirmPassword(event.target.value)}
+              minLength={8}
+              required
+              disabled={loading}
+            />
+          </div>
+
+          {error && (
+            <p role="alert" className="rounded-xl bg-red-50 p-3 text-sm text-red-700">
+              {error}
+            </p>
+          )}
+
+          <button
+            type="submit"
+            disabled={loading || !currentPassword || !newPassword || !confirmPassword}
+            className={`${primaryButton} w-full`}
+          >
+            {loading ? 'Modification en cours...' : 'Modifier mon mot de passe'}
+          </button>
+
+          <button
+            type="button"
+            onClick={onLogout}
+            disabled={loading}
+            className={`${secondaryButton} w-full`}
+          >
+            Se déconnecter
+          </button>
+        </form>
+      </section>
+    </main>
+  )
+}
 // APPLICATION PRINCIPALE
 // ============================================================
 
@@ -649,6 +873,11 @@ function App() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
 
   const [user, setUser] = useState<User | null>(null)
+  const [showProfile, setShowProfile] = useState(false)
+  const [avatarRefreshKey, setAvatarRefreshKey] = useState(0)
+  const [avatarBusy, setAvatarBusy] = useState(false)
+  const [profileError, setProfileError] = useState('')
+
   const [authLoading, setAuthLoading] = useState(true)
   const [authError, setAuthError] = useState('')
 
@@ -673,6 +902,12 @@ function App() {
   const [replacementUserId, setReplacementUserId] = useState('')
   const [userDeleteLoading, setUserDeleteLoading] = useState(false)
   const [userDeleteError, setUserDeleteError] = useState('')
+  // Réinitialisation du mot de passe par l'administrateur.
+  const [resetTarget, setResetTarget] = useState<User | null>(null)
+  const [temporaryPassword, setTemporaryPassword] = useState('')
+  const [resetPasswordLoading, setResetPasswordLoading] = useState(false)
+  const [resetPasswordError, setResetPasswordError] = useState('')
+  const [passwordCopied, setPasswordCopied] = useState(false)
 
   const [showTicketForm, setShowTicketForm] = useState(false)
   const [editingTicket, setEditingTicket] = useState<Ticket | null>(null)
@@ -715,6 +950,7 @@ function App() {
 
   function handleLogout() {
     logout()
+    setShowProfile(false)
     setUser(null)
     setDashboard(emptyDashboard)
     setClients([])
@@ -751,8 +987,79 @@ function App() {
     }
   }, [])
 
+
+  // Gestion de la photo de profil du compte connect?.
+  async function handleAvatarUpload(file: File) {
+    const allowedTypes = ["image/jpeg", "image/png", "image/webp"]
+    const maxSize = 2 * 1024 * 1024
+
+    if (!allowedTypes.includes(file.type)) {
+      setProfileError("Format non accept?. Utilisez JPEG, PNG ou WebP.")
+      return
+    }
+
+    if (file.size > maxSize) {
+      setProfileError("La photo ne doit pas d?passer 2 Mio.")
+      return
+    }
+
+    setAvatarBusy(true)
+    setProfileError("")
+
+    try {
+      const updatedUser = await uploadMyAvatar(file)
+      setUser(updatedUser)
+      setAvatarRefreshKey((current) => current + 1)
+      setSuccessMessage("Photo de profil mise ? jour.")
+
+      // Actualise ?galement l'avatar dans le tableau des utilisateurs.
+      try {
+        await refreshUsers()
+      } catch {
+        setDataError("Photo mise ? jour, mais la liste des utilisateurs n'a pas pu ?tre actualis?e.")
+      }
+    } catch (error) {
+      setProfileError(
+        error instanceof Error
+          ? error.message
+          : "Impossible de mettre ? jour la photo."
+      )
+    } finally {
+      setAvatarBusy(false)
+    }
+  }
+
+  async function handleAvatarDelete() {
+    setAvatarBusy(true)
+    setProfileError("")
+
+    try {
+      await deleteMyAvatar()
+
+      setUser((current) =>
+        current ? { ...current, avatar_url: null } : current
+      )
+      setAvatarRefreshKey((current) => current + 1)
+      setSuccessMessage("Photo de profil supprim?e.")
+
+      try {
+        await refreshUsers()
+      } catch {
+        setDataError("Photo supprim?e, mais la liste des utilisateurs n'a pas pu ?tre actualis?e.")
+      }
+    } catch (error) {
+      setProfileError(
+        error instanceof Error
+          ? error.message
+          : "Impossible de supprimer la photo."
+      )
+    } finally {
+      setAvatarBusy(false)
+    }
+  }
+
   async function refreshData() {
-    if (!user) return
+    if (!user || user.must_change_password) return
 
     setDataLoading(true)
     setDataError('')
@@ -776,16 +1083,16 @@ function App() {
   }
 
   async function refreshUsers() {
-    if (user?.role !== 'admin') return
+    if (user?.role !== 'admin' || user.must_change_password) return
     const data = await getUsers()
     setUsers(data)
   }
 
   // Chargement automatique des données principales après authentification.
-  // Les mises à jour d'état sont effectuées après les réponses asynchrones,
-  // ce qui évite les mises à jour synchrones interdites dans un effet React.
+  // Les mises à  jour d'état sont effectuées après les réponses asynchrones,
+  // ce qui évite les mises à  jour synchrones interdites dans un effet React.
   useEffect(() => {
-    if (!user) return
+    if (!user || user.must_change_password) return
 
     let active = true
 
@@ -823,7 +1130,7 @@ function App() {
   // la page Utilisateurs ou Tickets.
   useEffect(() => {
     if (activePage !== 'Utilisateurs' && activePage !== 'Tickets') return
-    if (user?.role !== 'admin') return
+    if (user?.role !== 'admin' || user.must_change_password) return
 
     let active = true
 
@@ -938,7 +1245,7 @@ function App() {
 
     const updatedUser = await updateUser(editingUser.id, data)
 
-    // Met à jour également la session si l'administrateur modifie son propre profil.
+    // Met à  jour également la session si l'administrateur modifie son propre profil.
     if (user?.id === updatedUser.id) {
       setUser(updatedUser)
     }
@@ -960,6 +1267,56 @@ function App() {
     }
   }
 
+  async function handleResetUserPassword(target: User) {
+    setResetTarget(target)
+    setTemporaryPassword('')
+    setResetPasswordError('')
+    setPasswordCopied(false)
+    setResetPasswordLoading(true)
+
+    try {
+      const result = await resetUserPassword(target.id)
+      setTemporaryPassword(result.temporary_password)
+    } catch (error) {
+      setResetPasswordError(
+        error instanceof Error
+          ? error.message
+          : 'Impossible de réinitialiser le mot de passe.',
+      )
+    } finally {
+      setResetPasswordLoading(false)
+    }
+  }
+
+  function closeResetPassword() {
+    if (resetPasswordLoading) return
+
+    const mustLogout =
+      resetTarget?.id === user?.id && temporaryPassword.length > 0
+
+    setResetTarget(null)
+    setTemporaryPassword('')
+    setResetPasswordError('')
+    setPasswordCopied(false)
+
+    if (mustLogout) {
+      handleLogout()
+    }
+  }
+
+  async function copyTemporaryPassword() {
+    if (!temporaryPassword) return
+
+    try {
+      await navigator.clipboard.writeText(temporaryPassword)
+      setPasswordCopied(true)
+      setResetPasswordError('')
+    } catch {
+      setResetPasswordError(
+        'Copie impossible. Sélectionnez et copiez le mot de passe manuellement.',
+      )
+    }
+  }
   function openDeleteUser(target: User) {
     setDeletingUser(target)
     setUserDeleteTicketCount(null)
@@ -1079,6 +1436,27 @@ function App() {
     )
   }
 
+  if (user.must_change_password) {
+    return (
+      <PasswordChangeScreen
+        user={user}
+        onLogout={handleLogout}
+        onSubmit={async (currentPassword, newPassword, confirmPassword) => {
+          const updatedUser = await changePassword(
+            currentPassword,
+            newPassword,
+            confirmPassword,
+          )
+          setUser(updatedUser)
+          setDataLoading(true)
+          setDataError('')
+        }}
+      />
+    )
+  }
+
+
+
   const isAdmin = user.role === 'admin'
 
   // ----------------------------------------------------------
@@ -1144,9 +1522,11 @@ function App() {
 
         <div className="mt-auto space-y-1 border-t border-slate-100 p-4">
           <button onClick={handleLogout} className="mt-4 flex w-full items-center gap-3 rounded-xl bg-slate-50 p-3 text-left transition hover:bg-red-50">
-            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-blue-100 text-sm font-bold text-blue-700">
-              {initials(user.full_name)}
-            </div>
+            <UserAvatar
+              user={user}
+              refreshKey={avatarRefreshKey}
+              className="flex h-10 w-10 items-center justify-center rounded-full bg-blue-100 text-sm font-bold text-blue-700"
+            />
             <div className="min-w-0 flex-1">
               <p className="truncate text-sm font-semibold text-slate-800">{user.full_name}</p>
               <p className="text-xs text-slate-400">{isAdmin ? 'Administrateur' : 'Agent'}</p>
@@ -1181,10 +1561,19 @@ function App() {
               <Bell size={20} />
             </button>
             <div className="hidden h-8 border-l border-slate-200 sm:block" />
-            <button onClick={handleLogout} className="flex items-center gap-2" title="Se déconnecter">
-              <div className="flex h-9 w-9 items-center justify-center rounded-full bg-blue-100 text-sm font-bold text-blue-700">
-                {initials(user.full_name)}
-              </div>
+            <button
+              onClick={() => {
+                setProfileError('')
+                setShowProfile(true)
+              }}
+              className="flex items-center gap-2"
+              title="Mon profil"
+            >
+              <UserAvatar
+                user={user}
+                refreshKey={avatarRefreshKey}
+                className="flex h-9 w-9 items-center justify-center rounded-full bg-blue-100 text-sm font-bold text-blue-700"
+              />
               <span className="hidden text-sm font-medium sm:block">{user.full_name}</span>
               <ChevronDown size={16} className="hidden text-slate-400 sm:block" />
             </button>
@@ -1423,7 +1812,7 @@ function App() {
                 </table>
               </div>
 
-              {filteredTickets.length === 0 && <p className="p-8 text-center text-sm text-slate-400">Aucun ticket ne correspond à votre recherche.</p>}
+              {filteredTickets.length === 0 && <p className="p-8 text-center text-sm text-slate-400">Aucun ticket ne correspond à  votre recherche.</p>}
               <div className="border-t border-slate-100 px-5 py-4 text-xs text-slate-400">
                 {isAdmin ? 'Administrateur : accès global et gestion complète des tickets.' : 'Agent : seuls les tickets qui vous sont affectés sont affichés.'}
               </div>
@@ -1453,7 +1842,11 @@ function App() {
                       <tr key={item.id} className="hover:bg-slate-50/70">
                         <td className="px-5 py-4">
                           <div className="flex items-center gap-3">
-                            <div className="flex h-9 w-9 items-center justify-center rounded-full bg-blue-100 text-xs font-bold text-blue-700">{initials(item.full_name)}</div>
+                            <UserAvatar
+                              user={item}
+                              refreshKey={item.id === user.id ? avatarRefreshKey : 0}
+                              className="flex h-9 w-9 items-center justify-center rounded-full bg-blue-100 text-xs font-bold text-blue-700"
+                            />
                             <span className="text-sm font-semibold text-slate-800">{item.full_name}</span>
                           </div>
                         </td>
@@ -1474,6 +1867,15 @@ function App() {
                               aria-label={`Modifier ${item.full_name}`}
                             >
                               <Pencil size={16} />
+                            </button>
+
+                            <button
+                              onClick={() => void handleResetUserPassword(item)}
+                              className="rounded-lg p-2 text-amber-600 hover:bg-amber-50"
+                              title="Réinitialiser le mot de passe"
+                              aria-label={`Réinitialiser le mot de passe de ${item.full_name}`}
+                            >
+                              <KeyRound size={16} />
                             </button>
 
                             {item.role === 'agent' && (
@@ -1518,6 +1920,94 @@ function App() {
       {/* ======================================================
           MODALES
       ====================================================== */}
+
+      {showProfile && (
+        <Modal
+          title="Mon profil"
+          onClose={() => {
+            if (!avatarBusy) {
+              setShowProfile(false)
+              setProfileError('')
+            }
+          }}
+        >
+          <div className="space-y-6">
+            <div className="flex items-center gap-4">
+              <UserAvatar
+                user={user}
+                refreshKey={avatarRefreshKey}
+                className="flex h-20 w-20 items-center justify-center rounded-full bg-blue-100 text-xl font-bold text-blue-700"
+              />
+              <div className="min-w-0">
+                <p className="truncate font-semibold text-slate-800">
+                  {user.full_name}
+                </p>
+                <p className="truncate text-sm text-slate-500">{user.email}</p>
+                <p className="mt-1 text-xs text-slate-400">
+                  {isAdmin ? 'Administrateur' : 'Agent'}
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <label
+                htmlFor="profile-avatar"
+                className="block text-sm font-medium text-slate-700"
+              >
+                Photo de profil
+              </label>
+              <input
+                id="profile-avatar"
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                disabled={avatarBusy}
+                onChange={(event) => {
+                  const file = event.target.files?.[0]
+                  if (file) void handleAvatarUpload(file)
+                  event.target.value = ''
+                }}
+                className="block w-full text-sm text-slate-600 file:mr-4 file:rounded-lg file:border-0 file:bg-blue-50 file:px-4 file:py-2 file:font-medium file:text-blue-700 hover:file:bg-blue-100 disabled:opacity-50"
+              />
+              <p className="text-xs text-slate-400">
+                Formats accept?s : JPEG, PNG et WebP. Taille maximale : 2 Mio.
+              </p>
+            </div>
+
+            {profileError && (
+              <p
+                role="alert"
+                className="rounded-lg bg-red-50 p-3 text-sm text-red-700"
+              >
+                {profileError}
+              </p>
+            )}
+
+            <div className="flex flex-wrap justify-end gap-3 border-t border-slate-100 pt-4">
+              {user.avatar_url && (
+                <button
+                  type="button"
+                  onClick={() => void handleAvatarDelete()}
+                  disabled={avatarBusy}
+                  className="rounded-lg px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50 disabled:opacity-50"
+                >
+                  Supprimer la photo
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  setShowProfile(false)
+                  setProfileError('')
+                }}
+                disabled={avatarBusy}
+                className="rounded-lg bg-slate-100 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-200 disabled:opacity-50"
+              >
+                {avatarBusy ? 'Enregistrement...' : 'Fermer'}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
 
       {showClientForm && isAdmin && (
         <ClientForm
@@ -1580,7 +2070,7 @@ function App() {
           <p className="text-sm text-slate-600">
             Voulez-vous vraiment supprimer le client <strong>{deletingClient.name}</strong> ?
           </p>
-          <p className="mt-2 text-xs text-red-500">La suppression peut être refusée si des tickets sont liés à ce client.</p>
+          <p className="mt-2 text-xs text-red-500">La suppression peut être refusée si des tickets sont liés à  ce client.</p>
           <div className="mt-6 flex justify-end gap-3">
             <button onClick={() => setDeletingClient(null)} className={secondaryButton}>Annuler</button>
             <button onClick={() => void handleDeleteClient()} className={dangerButton}>Supprimer</button>
@@ -1588,6 +2078,76 @@ function App() {
         </Modal>
       )}
 
+      {/* MODALE DE RÉINITIALISATION DU MOT DE PASSE */}
+      {resetTarget && (
+        <Modal
+          title="Réinitialiser le mot de passe"
+          onClose={closeResetPassword}
+        >
+          <div className="space-y-4">
+            <p className="text-sm text-slate-600">
+              Compte concerné :{' '}
+              <strong>{resetTarget.full_name}</strong>
+            </p>
+
+            {resetPasswordLoading && (
+              <p className="rounded-xl bg-blue-50 p-3 text-sm text-blue-700">
+                Génération du mot de passe temporaire en cours...
+              </p>
+            )}
+
+            {resetPasswordError && (
+              <p
+                role="alert"
+                className="rounded-xl bg-red-50 p-3 text-sm text-red-700"
+              >
+                {resetPasswordError}
+              </p>
+            )}
+
+            {temporaryPassword && (
+              <>
+                <p className="text-sm text-slate-600">
+                  Voici le mot de passe temporaire. Il ne sera affiché
+                  que dans cette fenêtre.
+                </p>
+
+                <div className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                  <code className="min-w-0 flex-1 break-all text-sm font-bold text-slate-900">
+                    {temporaryPassword}
+                  </code>
+
+                  <button
+                    type="button"
+                    onClick={() => void copyTemporaryPassword()}
+                    className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-700"
+                  >
+                    <Copy size={16} />
+                    {passwordCopied ? 'Copié' : 'Copier'}
+                  </button>
+                </div>
+
+                <p className="rounded-xl bg-amber-50 p-3 text-sm text-amber-800">
+                  Communiquez ce mot de passe de manière sécurisée.
+                  L'utilisateur devra le remplacer lors de sa prochaine
+                  connexion.
+                </p>
+              </>
+            )}
+
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={closeResetPassword}
+                disabled={resetPasswordLoading}
+                className={secondaryButton}
+              >
+                Fermer
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
       {/* MODALE DE SUPPRESSION D'UTILISATEUR */}
       {deletingUser && (
         <Modal title="Supprimer un utilisateur" onClose={closeDeleteUser}>
@@ -1609,7 +2169,7 @@ function App() {
                     Réaffectation nécessaire
                   </p>
                   <p className="mt-1 text-sm text-amber-800">
-                    {userDeleteTicketCount} ticket(s) sont actuellement affectés à cet agent.
+                    {userDeleteTicketCount} ticket(s) sont actuellement affectés à  cet agent.
                     Sélectionnez un agent actif pour les récupérer.
                   </p>
                 </div>

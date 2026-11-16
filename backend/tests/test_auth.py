@@ -156,3 +156,126 @@ def test_login_rate_limit_blocks_sixth_attempt(unauthenticated_client, test_db):
 
     assert [response.status_code for response in responses[:5]] == [401] * 5
     assert responses[5].status_code == 429
+
+def test_change_password_success_and_token_rotation(
+    unauthenticated_client,
+    test_db,
+):
+    """Le changement de mot de passe renouvelle le JWT et invalide l'ancien."""
+
+    user = create_test_user(test_db)
+    old_token = create_access_token(
+        str(user.id),
+        token_version=user.token_version,
+    )
+
+    response = unauthenticated_client.post(
+        "/api/auth/change-password",
+        headers={"Authorization": f"Bearer {old_token}"},
+        json={
+            "current_password": "TestPassword123!",
+            "new_password": "NewSecurePassword456!",
+            "confirm_password": "NewSecurePassword456!",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+
+    new_token = response.json()["access_token"]
+    assert new_token
+    assert new_token != old_token
+
+    test_db.refresh(user)
+
+    assert user.must_change_password is False
+    assert user.token_version == 1
+    assert user.password_changed_at is not None
+
+    # Le nouveau JWT doit être accepté.
+    new_response = unauthenticated_client.get(
+        "/api/auth/me",
+        headers={"Authorization": f"Bearer {new_token}"},
+    )
+    assert new_response.status_code == 200
+
+    # L'ancien JWT doit être invalidé.
+    old_response = unauthenticated_client.get(
+        "/api/auth/me",
+        headers={"Authorization": f"Bearer {old_token}"},
+    )
+    assert old_response.status_code == 401
+
+
+def test_change_password_rejects_wrong_current_password(
+    unauthenticated_client,
+    test_db,
+):
+    """Un mot de passe actuel incorrect doit être rejeté."""
+
+    user = create_test_user(test_db)
+    token = create_access_token(str(user.id))
+
+    response = unauthenticated_client.post(
+        "/api/auth/change-password",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "current_password": "WrongPassword123!",
+            "new_password": "NewSecurePassword456!",
+            "confirm_password": "NewSecurePassword456!",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == (
+        "Le mot de passe actuel est incorrect."
+    )
+
+    test_db.refresh(user)
+    assert user.token_version == 0
+
+
+def test_change_password_rejects_mismatched_confirmation(
+    unauthenticated_client,
+    test_db,
+):
+    """Deux nouveaux mots de passe différents doivent être rejetés."""
+
+    user = create_test_user(test_db)
+    token = create_access_token(str(user.id))
+
+    response = unauthenticated_client.post(
+        "/api/auth/change-password",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "current_password": "TestPassword123!",
+            "new_password": "NewSecurePassword456!",
+            "confirm_password": "DifferentPassword789!",
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_change_password_rejects_same_password(
+    unauthenticated_client,
+    test_db,
+):
+    """Le nouveau mot de passe doit être différent de l'ancien."""
+
+    user = create_test_user(test_db)
+    token = create_access_token(str(user.id))
+
+    response = unauthenticated_client.post(
+        "/api/auth/change-password",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "current_password": "TestPassword123!",
+            "new_password": "TestPassword123!",
+            "confirm_password": "TestPassword123!",
+        },
+    )
+
+    assert response.status_code == 422
+
+    test_db.refresh(user)
+    assert user.token_version == 0

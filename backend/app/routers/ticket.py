@@ -8,7 +8,7 @@ from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import get_current_user, require_admin
+from app.core.dependencies import get_fully_authenticated_user, require_admin
 from app.database import get_db
 from app.models.client import Client
 from app.models.ticket import Ticket
@@ -70,7 +70,7 @@ def validate_assignment(assigned_to: str | None, db: Session) -> str | None:
 def create_ticket(
     payload: TicketCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+   current_user: User = Depends(get_fully_authenticated_user),
 ):
     """Crée un ticket. Un agent ne peut l'affecter qu'à lui-même."""
 
@@ -83,6 +83,13 @@ def create_ticket(
         )
 
     data = payload.model_dump()
+    # Un agent ne peut pas définir une échéance à la création.
+    if current_user.role == "agent" and "due_at" in payload.model_fields_set:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Un agent ne peut pas définir l'échéance d'un ticket.",
+        )
+
 
     if current_user.role == "agent":
         requested_assignee = data.get("assigned_to")
@@ -133,7 +140,7 @@ def list_tickets(
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_fully_authenticated_user),
 ):
     """Liste les tickets accessibles à l'utilisateur connecté."""
 
@@ -192,7 +199,7 @@ def list_tickets(
 def get_ticket(
     ticket_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_fully_authenticated_user),
 ):
     """Retourne un ticket après vérification des droits d'accès."""
 
@@ -214,7 +221,7 @@ def update_ticket(
     ticket_id: int,
     payload: TicketUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_fully_authenticated_user),
 ):
     """Modifie un ticket selon les permissions de l'utilisateur."""
 

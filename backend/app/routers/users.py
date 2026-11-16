@@ -1,8 +1,24 @@
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+"""Routes d'administration des utilisateurs et de leurs avatars."""
+
+import logging
+import secrets
+import string
+
+from typing import Literal
+
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Query,
+    Response,
+    UploadFile,
+    status,
+)
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-from typing import Literal
 
 from app.core.dependencies import require_admin
 from app.core.security import hash_password
@@ -10,18 +26,61 @@ from app.database import get_db
 from app.models.ticket import Ticket
 from app.models.user import User
 from app.schemas.user import (
+    PasswordResetResponse,
     UserCreate,
     UserResponse,
     UserStatusUpdate,
     UserUpdate,
 )
+from app.services import file_storage
 
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/api/users",
     tags=["Users Administration"],
     dependencies=[Depends(require_admin)],
 )
+
+
+def _delete_avatar_safely(storage_key: str | None) -> None:
+    """Supprime un avatar sans annuler une opération déjà validée."""
+
+    if not storage_key:
+        return
+
+    try:
+        file_storage.delete_stored_file("avatars", storage_key)
+    except Exception:
+        logger.exception(
+            "Impossible de supprimer l'avatar stocké : %s",
+            storage_key,
+        )
+
+
+def generate_temporary_password() -> str:
+    """Génère un mot de passe temporaire sécurisé de 24 caractères."""
+
+    alphabet = string.ascii_letters + string.digits
+
+    # Garantit au moins une minuscule, une majuscule et un chiffre.
+    characters = [
+        secrets.choice(string.ascii_lowercase),
+        secrets.choice(string.ascii_uppercase),
+        secrets.choice(string.digits),
+    ]
+
+    # Complète jusqu'à 24 caractères.
+    characters.extend(
+        secrets.choice(alphabet)
+        for _ in range(21)
+    )
+
+    # Mélange les caractères de façon cryptographiquement sûre.
+    secrets.SystemRandom().shuffle(characters)
+
+    return "".join(characters)
 
 
 def get_user_or_404(user_id: int, db: Session) -> User:
@@ -66,7 +125,7 @@ def ensure_last_admin_protection(
     db: Session,
     operation: Literal["supprimer", "désactiver"] = "supprimer",
 ) -> None:
-    """Empêche la suppression ou la désactivation du dernier administrateur actif."""
+    """Protège le dernier administrateur actif."""
 
     if user.role != "admin" or not user.is_active:
         return
@@ -82,6 +141,7 @@ def ensure_last_admin_protection(
 
     if active_admins <= 1:
         action = "supprimer" if operation == "supprimer" else "désactiver"
+
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Impossible de {action} le dernier administrateur actif.",
@@ -101,7 +161,11 @@ def create_user(
 
     email = str(user_data.email).strip().lower()
 
-    existing_user = db.query(User).filter(User.email == email).first()
+    existing_user = (
+        db.query(User)
+        .filter(User.email == email)
+        .first()
+    )
 
     if existing_user:
         raise HTTPException(
@@ -121,8 +185,10 @@ def create_user(
         db.add(user)
         db.commit()
         db.refresh(user)
+
     except IntegrityError:
         db.rollback()
+
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Cette adresse e-mail est déjà utilisée.",
@@ -132,17 +198,57 @@ def create_user(
 
 
 @router.get("/", response_model=list[UserResponse])
-def list_users(db: Session = Depends(get_db)):
+def list_users(
+    db: Session = Depends(get_db),
+):
     """Retourne la liste de tous les utilisateurs."""
 
-    return db.query(User).order_by(User.id.asc()).all()
+    return (
+        db.query(User)
+        .order_by(User.id.asc())
+        .all()
+    )
 
 
 @router.get("/{user_id}", response_model=UserResponse)
-def get_user(user_id: int, db: Session = Depends(get_db)):
+def get_user(
+    user_id: int,
+    db: Session = Depends(get_db),
+):
     """Retourne un utilisateur à partir de son identifiant."""
 
     return get_user_or_404(user_id, db)
+
+
+@router.post(
+    "/{user_id}/password/reset",
+    response_model=PasswordResetResponse,
+)
+def reset_user_password(
+    user_id: int,
+    db: Session = Depends(get_db),
+):
+    """Réinitialise le mot de passe d'un utilisateur."""
+
+    user = get_user_or_404(user_id, db)
+
+    temporary_password = generate_temporary_password()
+
+    try:
+        user.hashed_password = hash_password(temporary_password)
+        user.must_change_password = True
+        user.password_changed_at = None
+        user.token_version += 1
+
+        db.commit()
+
+    except Exception:
+        db.rollback()
+        raise
+
+    return PasswordResetResponse(
+        temporary_password=temporary_password,
+    )
 
 
 @router.patch(
@@ -162,12 +268,9 @@ def update_user(
     new_name = changes.get("full_name")
     new_email = changes.get("email")
 
-    # Vérifie que le changement de nom ne crée pas d'ambiguïté.
     if new_name is not None and new_name != user.full_name:
         ensure_unique_full_name(new_name, user.id, db)
 
-        # Si l'ancien nom est déjà partagé, les tickets ne peuvent
-        # pas être attribués de façon fiable à ce seul utilisateur.
         duplicate_old_name = (
             db.query(User)
             .filter(
@@ -203,7 +306,6 @@ def update_user(
             )
 
     try:
-        # Synchronise les affectations avant de modifier le nom.
         if new_name is not None and new_name != user.full_name:
             db.query(Ticket).filter(
                 Ticket.assigned_to == user.full_name
@@ -222,10 +324,12 @@ def update_user(
 
     except IntegrityError:
         db.rollback()
+
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Une donnée fournie est déjà utilisée.",
         )
+
     except Exception:
         db.rollback()
         raise
@@ -262,16 +366,116 @@ def update_user_status(
 
     try:
         user.is_active = status_data.is_active
+
         db.commit()
         db.refresh(user)
+
     except Exception:
         db.rollback()
+
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Impossible de modifier le statut du compte.",
         )
 
     return user
+
+
+@router.put(
+    "/{user_id}/avatar",
+    response_model=UserResponse,
+)
+async def update_user_avatar(
+    user_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    """Ajoute ou remplace l'avatar d'un utilisateur."""
+
+    user = get_user_or_404(user_id, db)
+
+    try:
+        stored_file = await file_storage.save_avatar(file)
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+    except OSError as exc:
+        logger.exception("Erreur de stockage du nouvel avatar.")
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Impossible d'enregistrer l'avatar.",
+        ) from exc
+
+    old_storage_key = user.avatar_path
+
+    try:
+        user.avatar_path = stored_file.storage_key
+
+        db.commit()
+        db.refresh(user)
+
+    except Exception as exc:
+        db.rollback()
+
+        _delete_avatar_safely(stored_file.storage_key)
+
+        logger.exception(
+            "Impossible d'enregistrer l'avatar de l'utilisateur %s.",
+            user_id,
+        )
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Impossible de mettre à jour l'avatar.",
+        ) from exc
+
+    if old_storage_key != stored_file.storage_key:
+        _delete_avatar_safely(old_storage_key)
+
+    return user
+
+
+@router.delete(
+    "/{user_id}/avatar",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_user_avatar(
+    user_id: int,
+    db: Session = Depends(get_db),
+):
+    """Supprime l'avatar d'un utilisateur."""
+
+    user = get_user_or_404(user_id, db)
+    old_storage_key = user.avatar_path
+
+    if not old_storage_key:
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    try:
+        user.avatar_path = None
+        db.commit()
+
+    except Exception as exc:
+        db.rollback()
+
+        logger.exception(
+            "Impossible de supprimer l'avatar de l'utilisateur %s.",
+            user_id,
+        )
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Impossible de supprimer l'avatar.",
+        ) from exc
+
+    _delete_avatar_safely(old_storage_key)
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.delete(
@@ -284,16 +488,10 @@ def delete_user(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_admin),
 ):
-    """
-    Supprime un utilisateur.
-
-    Si des tickets lui sont affectés, un agent actif de remplacement
-    doit être fourni avec replacement_user_id.
-    """
+    """Supprime un utilisateur et gère ses tickets affectés."""
 
     user = get_user_or_404(user_id, db)
 
-    # Protection contre l'auto-suppression.
     if user.id == current_user.id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -302,8 +500,6 @@ def delete_user(
 
     ensure_last_admin_protection(user, db)
 
-    # Le nom doit identifier un seul compte pour éviter de toucher
-    # aux tickets d'un autre utilisateur.
     duplicate_name = (
         db.query(User)
         .filter(
@@ -328,7 +524,6 @@ def delete_user(
     )
 
     ticket_count = assigned_tickets.count()
-
     replacement = None
 
     if ticket_count > 0:
@@ -371,8 +566,10 @@ def delete_user(
             detail="Aucun ticket ne nécessite de réaffectation.",
         )
 
+    # Conserve la clé avant la suppression de l'utilisateur.
+    avatar_storage_key = user.avatar_path
+
     try:
-        # La réaffectation et la suppression sont atomiques.
         if ticket_count > 0 and replacement is not None:
             assigned_tickets.update(
                 {Ticket.assigned_to: replacement.full_name},
@@ -384,12 +581,17 @@ def delete_user(
 
     except IntegrityError:
         db.rollback()
+
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Impossible de supprimer cet utilisateur.",
         )
+
     except Exception:
         db.rollback()
         raise
+
+    # Le fichier est supprimé uniquement après validation de la transaction.
+    _delete_avatar_safely(avatar_storage_key)
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -65,6 +65,17 @@ class Ticket(Base):
 
     resolved_at = Column(DateTime(timezone=True), nullable=True)
 
+    # Échéance facultative, enregistrée en UTC.
+    due_at = Column(DateTime(timezone=True), nullable=True, index=True)
+
+    # Pièces jointes associées au ticket.
+    attachments = relationship(
+        "TicketAttachment",
+        back_populates="ticket",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
     # Relation avec le modèle Client.
     client = relationship("Client", back_populates="tickets")
 

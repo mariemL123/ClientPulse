@@ -1,4 +1,13 @@
+import io
 
+import pytest
+from fastapi import HTTPException
+from fastapi.testclient import TestClient
+from PIL import Image
+
+from app.models.user import User
+from app.routers.users import ensure_last_admin_protection
+from app.services import file_storage
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
@@ -26,28 +35,6 @@ def create_agent(
     assert response.status_code == 201, response.text
     return response.json()
 
-
-def create_admin(
-    admin_client: TestClient,
-    email: str = "second.admin@example.com",
-    full_name: str = "Second Admin",
-) -> dict:
-    """Crée un second administrateur pour les tests de protection."""
-
-    # L'API publique de création crée uniquement des agents.
-    # La création d'un deuxième administrateur nécessite donc
-    # une insertion directe dans la base de test.
-    from app.core.security import hash_password
-    from app.database import get_db
-    from app.models.user import User
-
-    db_dependency = get_db
-    # Cette fonction est volontairement remplacée par une création
-    # via la session de test exposée dans les fixtures du projet.
-    # Le test dédié au dernier administrateur est vérifié séparément.
-    raise NotImplementedError(
-        "Utiliser une fixture dédiée pour créer un deuxième administrateur."
-    )
 
 
 def create_test_client(api_client: TestClient) -> int:
@@ -86,6 +73,49 @@ def create_test_ticket(
             "assigned_to": assigned_to,
         },
     )
+
+    # Vérifie que le ticket a bien été créé.
+    assert response.status_code == 201, response.text
+
+    # Retourne les données du ticket créé.
+    return response.json()# ---------------------------------------------------------------------
+# OUTILS DE TEST POUR LES AVATARS ADMINISTRATIFS
+# ---------------------------------------------------------------------
+
+
+@pytest.fixture()
+def isolated_user_avatar_storage(tmp_path, monkeypatch):
+    """Isole le stockage des avatars administratifs."""
+
+    monkeypatch.setattr(
+        file_storage.settings,
+        "STORAGE_DIR",
+        tmp_path,
+    )
+
+    return tmp_path
+
+
+def make_user_avatar(color: str = "blue") -> bytes:
+    """Génère une image PNG valide en mémoire."""
+
+    buffer = io.BytesIO()
+
+    image = Image.new("RGB", (32, 32), color)
+    image.save(buffer, format="PNG")
+
+    return buffer.getvalue()
+
+
+def get_stored_user_avatars(storage_dir):
+    """Retourne les avatars réellement présents sur le disque."""
+
+    avatar_dir = storage_dir / "avatars"
+
+    if not avatar_dir.exists():
+        return []
+
+    return list(avatar_dir.iterdir())
 
     assert response.status_code == 201, response.text
     return response.json()
@@ -690,3 +720,403 @@ def test_last_admin_protection_allows_operation_with_two_active_admins(test_db):
 
     ensure_last_admin_protection(first_admin, test_db, operation="supprimer")
     ensure_last_admin_protection(first_admin, test_db, operation="désactiver")
+
+# ---------------------------------------------------------------------
+# RÉINITIALISATION DES MOTS DE PASSE
+# ---------------------------------------------------------------------
+
+
+def test_admin_can_reset_user_password_and_invalidate_old_token(
+    admin_client: TestClient,
+    test_db,
+):
+    """Vérifie la réinitialisation sécurisée du mot de passe d'un agent."""
+
+    from fastapi.testclient import TestClient as HTTPTestClient
+
+    from app.core.security import create_access_token, verify_password
+    from app.main import app
+
+    # Crée un agent via l'API d'administration.
+    agent = create_agent(admin_client)
+
+    # Récupère son compte dans la base de test.
+    user = test_db.query(User).filter(User.id == agent["id"]).first()
+    assert user is not None
+
+    # Génère un ancien JWT avant la réinitialisation.
+    old_token = create_access_token(
+        str(user.id),
+        token_version=user.token_version,
+    )
+
+    # Réinitialise le mot de passe depuis le compte administrateur.
+    response = admin_client.post(
+        f"/api/users/{user.id}/password/reset"
+    )
+
+    assert response.status_code == 200, response.text
+
+    temporary_password = response.json()["temporary_password"]
+
+    # Vérifie les caractéristiques du mot de passe temporaire.
+    assert len(temporary_password) == 24
+    assert any(char.islower() for char in temporary_password)
+    assert any(char.isupper() for char in temporary_password)
+    assert any(char.isdigit() for char in temporary_password)
+
+    # Recharge le compte pour vérifier les changements persistés.
+    test_db.refresh(user)
+
+    assert verify_password(temporary_password, user.hashed_password)
+    assert user.must_change_password is True
+    assert user.password_changed_at is None
+    assert user.token_version == 1
+
+    # Vérifie que l'ancien JWT est désormais refusé.
+    with HTTPTestClient(
+        app,
+        headers={"Authorization": f"Bearer {old_token}"},
+    ) as old_session:
+        old_token_response = old_session.get("/api/auth/me")
+
+    assert old_token_response.status_code == 401
+
+
+def test_agent_cannot_reset_user_password(client: TestClient):
+    """Un agent ne peut pas réinitialiser le mot de passe d'un utilisateur."""
+
+    response = client.post("/api/users/1/password/reset")
+
+    assert response.status_code == 403
+
+# ---------------------------------------------------------------------
+# GESTION ADMINISTRATIVE DES AVATARS
+# ---------------------------------------------------------------------
+
+
+def test_admin_can_upload_user_avatar(
+    admin_client: TestClient,
+    isolated_user_avatar_storage,
+):
+    """Un administrateur peut ajouter un avatar à un agent."""
+
+    agent = create_agent(admin_client)
+
+    response = admin_client.put(
+        f"/api/users/{agent['id']}/avatar",
+        files={
+            "file": (
+                "avatar.png",
+                make_user_avatar(),
+                "image/png",
+            )
+        },
+    )
+
+    assert response.status_code == 200, response.text
+
+    payload = response.json()
+
+    assert payload["id"] == agent["id"]
+    assert payload["avatar_url"] == (
+        f"/api/auth/users/{agent['id']}/avatar"
+    )
+    assert "avatar_path" not in payload
+
+    stored_files = get_stored_user_avatars(
+        isolated_user_avatar_storage
+    )
+
+    assert len(stored_files) == 1
+
+    # Vérifie que l'avatar est accessible via son URL authentifiée.
+    avatar_response = admin_client.get(payload["avatar_url"])
+
+    assert avatar_response.status_code == 200
+    assert avatar_response.headers["content-type"] == "image/png"
+
+
+def test_admin_can_replace_user_avatar(
+    admin_client: TestClient,
+    isolated_user_avatar_storage,
+):
+    """Le remplacement supprime l'ancien fichier physique."""
+
+    agent = create_agent(admin_client)
+
+    first_response = admin_client.put(
+        f"/api/users/{agent['id']}/avatar",
+        files={
+            "file": (
+                "first.png",
+                make_user_avatar("blue"),
+                "image/png",
+            )
+        },
+    )
+
+    assert first_response.status_code == 200
+
+    old_files = get_stored_user_avatars(
+        isolated_user_avatar_storage
+    )
+
+    assert len(old_files) == 1
+    old_file = old_files[0]
+
+    second_response = admin_client.put(
+        f"/api/users/{agent['id']}/avatar",
+        files={
+            "file": (
+                "second.png",
+                make_user_avatar("red"),
+                "image/png",
+            )
+        },
+    )
+
+    assert second_response.status_code == 200
+
+    new_files = get_stored_user_avatars(
+        isolated_user_avatar_storage
+    )
+
+    assert len(new_files) == 1
+    assert new_files[0] != old_file
+    assert not old_file.exists()
+
+    assert (
+        second_response.json()["avatar_url"]
+        == first_response.json()["avatar_url"]
+    )
+
+
+def test_admin_can_delete_user_avatar(
+    admin_client: TestClient,
+    isolated_user_avatar_storage,
+):
+    """Un administrateur peut supprimer l'avatar d'un agent."""
+
+    agent = create_agent(admin_client)
+
+    upload_response = admin_client.put(
+        f"/api/users/{agent['id']}/avatar",
+        files={
+            "file": (
+                "avatar.png",
+                make_user_avatar(),
+                "image/png",
+            )
+        },
+    )
+
+    assert upload_response.status_code == 200
+
+    avatar_url = upload_response.json()["avatar_url"]
+
+    assert len(
+        get_stored_user_avatars(isolated_user_avatar_storage)
+    ) == 1
+
+    response = admin_client.delete(
+        f"/api/users/{agent['id']}/avatar"
+    )
+
+    assert response.status_code == 204
+    assert response.content == b""
+
+    assert get_stored_user_avatars(
+        isolated_user_avatar_storage
+    ) == []
+
+    # L'URL de l'avatar supprimé ne doit plus être accessible.
+    avatar_response = admin_client.get(avatar_url)
+
+    assert avatar_response.status_code == 404
+
+
+def test_admin_can_delete_user_avatar_idempotently(
+    admin_client: TestClient,
+    isolated_user_avatar_storage,
+):
+    """Supprimer un avatar absent ne provoque pas d'erreur."""
+
+    agent = create_agent(admin_client)
+
+    first_response = admin_client.delete(
+        f"/api/users/{agent['id']}/avatar"
+    )
+
+    second_response = admin_client.delete(
+        f"/api/users/{agent['id']}/avatar"
+    )
+
+    assert first_response.status_code == 204
+    assert second_response.status_code == 204
+
+    assert get_stored_user_avatars(
+        isolated_user_avatar_storage
+    ) == []
+
+
+def test_admin_cannot_upload_invalid_user_avatar(
+    admin_client: TestClient,
+    isolated_user_avatar_storage,
+):
+    """Un fichier qui n'est pas une image est refusé."""
+
+    agent = create_agent(admin_client)
+
+    response = admin_client.put(
+        f"/api/users/{agent['id']}/avatar",
+        files={
+            "file": (
+                "fake.png",
+                b"This is not a valid image.",
+                "image/png",
+            )
+        },
+    )
+
+    assert response.status_code == 400
+
+    assert get_stored_user_avatars(
+        isolated_user_avatar_storage
+    ) == []
+
+
+def test_admin_cannot_upload_avatar_to_unknown_user(
+    admin_client: TestClient,
+    isolated_user_avatar_storage,
+):
+    """Un utilisateur inexistant renvoie 404."""
+
+    response = admin_client.put(
+        "/api/users/9999/avatar",
+        files={
+            "file": (
+                "avatar.png",
+                make_user_avatar(),
+                "image/png",
+            )
+        },
+    )
+
+    assert response.status_code == 404
+
+    assert get_stored_user_avatars(
+        isolated_user_avatar_storage
+    ) == []
+
+
+def test_agent_cannot_manage_user_avatars(
+    client: TestClient,
+    isolated_user_avatar_storage,
+):
+    """Un agent ne peut ni ajouter ni supprimer un avatar administratif."""
+
+    profile = client.get("/api/auth/me")
+
+    assert profile.status_code == 200
+
+    user_id = profile.json()["id"]
+
+    upload_response = client.put(
+        f"/api/users/{user_id}/avatar",
+        files={
+            "file": (
+                "avatar.png",
+                make_user_avatar(),
+                "image/png",
+            )
+        },
+    )
+
+    delete_response = client.delete(
+        f"/api/users/{user_id}/avatar"
+    )
+
+    assert upload_response.status_code == 403
+    assert delete_response.status_code == 403
+
+    assert get_stored_user_avatars(
+        isolated_user_avatar_storage
+    ) == []
+
+
+def test_unauthenticated_user_cannot_manage_user_avatars(
+    unauthenticated_client: TestClient,
+    isolated_user_avatar_storage,
+):
+    """Les routes administratives exigent une authentification."""
+
+    upload_response = unauthenticated_client.put(
+        "/api/users/1/avatar",
+        files={
+            "file": (
+                "avatar.png",
+                make_user_avatar(),
+                "image/png",
+            )
+        },
+    )
+
+    delete_response = unauthenticated_client.delete(
+        "/api/users/1/avatar"
+    )
+
+    assert upload_response.status_code == 401
+    assert delete_response.status_code == 401
+
+    assert get_stored_user_avatars(
+        isolated_user_avatar_storage
+    ) == []
+
+
+def test_deleting_user_also_deletes_physical_avatar(
+    admin_client: TestClient,
+    isolated_user_avatar_storage,
+):
+    """La suppression du compte supprime aussi son avatar physique."""
+
+    agent = create_agent(admin_client)
+
+    upload_response = admin_client.put(
+        f"/api/users/{agent['id']}/avatar",
+        files={
+            "file": (
+                "avatar.png",
+                make_user_avatar(),
+                "image/png",
+            )
+        },
+    )
+
+    assert upload_response.status_code == 200
+
+    stored_files = get_stored_user_avatars(
+        isolated_user_avatar_storage
+    )
+
+    assert len(stored_files) == 1
+
+    avatar_file = stored_files[0]
+
+    response = admin_client.delete(
+        f"/api/users/{agent['id']}"
+    )
+
+    assert response.status_code == 204
+
+    assert not avatar_file.exists()
+
+    assert get_stored_user_avatars(
+        isolated_user_avatar_storage
+    ) == []
+
+    check_user = admin_client.get(
+        f"/api/users/{agent['id']}"
+    )
+
+    assert check_user.status_code == 404

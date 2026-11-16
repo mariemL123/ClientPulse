@@ -232,3 +232,171 @@ def test_admin_cannot_delete_unknown_ticket(admin_client):
     response = admin_client.delete("/api/tickets/999999")
 
     assert response.status_code == 404, response.text
+
+
+def test_agent_cannot_set_due_at_when_creating_ticket(client, admin_client):
+    """An agent cannot define a deadline when creating a ticket."""
+
+    client_id = create_test_client(admin_client)
+
+    response = client.post(
+        "/api/tickets",
+        json={
+            "title": "Ticket with restricted deadline",
+            "description": "An agent attempts to set a deadline.",
+            "client_id": client_id,
+            "due_at": "2030-01-01T12:00:00Z",
+        },
+    )
+
+    assert response.status_code == 403, response.text
+
+
+def test_admin_can_create_ticket_with_due_at(admin_client):
+    """An administrator can create a ticket with a UTC deadline."""
+
+    client_id = create_test_client(admin_client)
+    due_at = "2030-01-01T12:00:00Z"
+
+    response = admin_client.post(
+        "/api/tickets",
+        json={
+            "title": "Ticket with deadline",
+            "description": "Administrator creates a ticket with a deadline.",
+            "client_id": client_id,
+            "due_at": due_at,
+        },
+    )
+
+    assert response.status_code == 201, response.text
+
+    ticket = response.json()
+
+    assert ticket["due_at"] is not None
+    parsed_due_at = datetime.fromisoformat(
+        ticket["due_at"].replace("Z", "+00:00")
+    )
+    assert parsed_due_at.utcoffset().total_seconds() == 0
+    assert ticket["is_overdue"] is False
+
+
+def test_agent_cannot_update_due_at(client, admin_client):
+    """An agent cannot modify a ticket deadline."""
+
+    client_id = create_test_client(admin_client)
+    ticket = create_test_ticket(client, client_id)
+
+    response = client.patch(
+        f"/api/tickets/{ticket['id']}",
+        json={"due_at": "2030-01-01T12:00:00Z"},
+    )
+
+    assert response.status_code == 403, response.text
+
+
+def test_admin_can_update_due_at(admin_client, client):
+    """An administrator can modify an existing ticket deadline."""
+
+    client_id = create_test_client(admin_client)
+    ticket = create_test_ticket(client, client_id)
+    due_at = "2030-01-01T12:00:00Z"
+
+    response = admin_client.patch(
+        f"/api/tickets/{ticket['id']}",
+        json={"due_at": due_at},
+    )
+
+    assert response.status_code == 200, response.text
+
+    updated_ticket = response.json()
+
+    assert updated_ticket["due_at"] is not None
+    parsed_due_at = datetime.fromisoformat(
+        updated_ticket["due_at"].replace("Z", "+00:00")
+    )
+    assert parsed_due_at.utcoffset().total_seconds() == 0
+    assert updated_ticket["is_overdue"] is False
+
+
+def test_agent_cannot_set_due_at_when_creating_ticket(client, admin_client):
+    """An agent cannot define a deadline when creating a ticket."""
+
+    client_id = create_test_client(admin_client)
+
+    response = client.post(
+        "/api/tickets",
+        json={
+            "title": "Ticket with restricted deadline",
+            "description": "An agent attempts to set a deadline.",
+            "client_id": client_id,
+            "due_at": "2030-01-01T12:00:00Z",
+        },
+    )
+
+    assert response.status_code == 403, response.text
+
+
+def test_admin_can_create_ticket_with_due_at(admin_client):
+    """An administrator can create a ticket with a UTC deadline."""
+
+    client_id = create_test_client(admin_client)
+    due_at = "2030-01-01T12:00:00Z"
+
+    response = admin_client.post(
+        "/api/tickets",
+        json={
+            "title": "Ticket with deadline",
+            "description": "Administrator creates a ticket with a deadline.",
+            "client_id": client_id,
+            "due_at": due_at,
+        },
+    )
+
+    assert response.status_code == 201, response.text
+
+    ticket = response.json()
+
+    assert ticket["due_at"] is not None
+    parsed_due_at = datetime.fromisoformat(
+        ticket["due_at"].replace("Z", "+00:00")
+    )
+    assert parsed_due_at.utcoffset().total_seconds() == 0
+    assert ticket["is_overdue"] is False
+
+
+def test_agent_cannot_update_due_at(client, admin_client):
+    """An agent cannot modify a ticket deadline."""
+
+    client_id = create_test_client(admin_client)
+    ticket = create_test_ticket(client, client_id)
+
+    response = client.patch(
+        f"/api/tickets/{ticket['id']}",
+        json={"due_at": "2030-01-01T12:00:00Z"},
+    )
+
+    assert response.status_code == 403, response.text
+
+
+def test_admin_can_update_due_at(admin_client, client):
+    """An administrator can modify an existing ticket deadline."""
+
+    client_id = create_test_client(admin_client)
+    ticket = create_test_ticket(client, client_id)
+    due_at = "2030-01-01T12:00:00Z"
+
+    response = admin_client.patch(
+        f"/api/tickets/{ticket['id']}",
+        json={"due_at": due_at},
+    )
+
+    assert response.status_code == 200, response.text
+
+    updated_ticket = response.json()
+
+    assert updated_ticket["due_at"] is not None
+    parsed_due_at = datetime.fromisoformat(
+        updated_ticket["due_at"].replace("Z", "+00:00")
+    )
+    assert parsed_due_at.utcoffset().total_seconds() == 0
+    assert updated_ticket["is_overdue"] is False
