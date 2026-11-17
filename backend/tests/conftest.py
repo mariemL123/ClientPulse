@@ -11,7 +11,20 @@ from app.core.rate_limiter import limiter
 from app.database import Base, enable_sqlite_foreign_keys, get_db
 from app.main import app
 from app.models.user import User
+from app.services import file_storage
 
+
+
+
+@pytest.fixture(autouse=True)
+def use_local_storage_by_default(monkeypatch):
+    """Force le stockage local pour les tests, sauf surcharge explicite."""
+
+    monkeypatch.setattr(
+        file_storage.settings,
+        "STORAGE_BACKEND",
+        "local",
+    )
 
 # Base SQLite en mémoire : aucune donnée réelle n'est modifiée.
 TEST_DATABASE_URL = "sqlite://"
