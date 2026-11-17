@@ -251,3 +251,140 @@ def test_production_rejects_empty_cors_origins():
             ),
             CORS_ORIGINS="",
         )
+# ---------------------------------------------------------------------------
+# Tests de configuration du stockage Supabase
+# ---------------------------------------------------------------------------
+
+def test_supabase_storage_is_local_by_default():
+    """Le stockage local doit rester le comportement par d?faut."""
+
+    settings = make_settings()
+
+    assert settings.STORAGE_BACKEND == "local"
+    assert settings.SUPABASE_URL == ""
+    assert settings.SUPABASE_AVATARS_BUCKET == "clientpulse-avatars"
+
+
+def test_storage_backend_is_normalized():
+    """Le mode de stockage doit ?tre normalis? en minuscules."""
+
+    settings = make_settings(
+        STORAGE_BACKEND=" SUPABASE ",
+        SUPABASE_URL="https://example.supabase.co",
+        SUPABASE_SERVICE_ROLE_KEY="test-service-role-key",
+    )
+
+    assert settings.STORAGE_BACKEND == "supabase"
+
+
+def test_unsupported_storage_backend_is_rejected():
+    """Un backend de stockage non pris en charge doit ?tre refus?."""
+
+    with pytest.raises(ValidationError):
+        make_settings(STORAGE_BACKEND="aws")
+
+
+def test_supabase_url_is_normalized():
+    """L'URL Supabase doit ?tre normalis?e sans slash final."""
+
+    settings = make_settings(
+        STORAGE_BACKEND="supabase",
+        SUPABASE_URL=" https://example.supabase.co/ ",
+        SUPABASE_SERVICE_ROLE_KEY="test-service-role-key",
+    )
+
+    assert settings.SUPABASE_URL == "https://example.supabase.co"
+
+
+@pytest.mark.parametrize(
+    "supabase_url",
+    [
+        "ftp://example.supabase.co",
+        "https://",
+        "https://example.supabase.co/storage",
+        "https://example.supabase.co?query=1",
+        "https://example.supabase.co#fragment",
+        "https://user:password@example.supabase.co",
+        "https://example.supabase.co:99999",
+    ],
+)
+def test_invalid_supabase_urls_are_rejected(supabase_url):
+    """Une URL Supabase qui n'est pas une URL racine valide doit ?tre refus?e."""
+
+    with pytest.raises(ValidationError):
+        make_settings(
+            STORAGE_BACKEND="supabase",
+            SUPABASE_URL=supabase_url,
+            SUPABASE_SERVICE_ROLE_KEY="test-service-role-key",
+        )
+
+
+def test_supabase_requires_project_url():
+    """Le mode Supabase exige l'URL du projet."""
+
+    with pytest.raises(ValidationError):
+        make_settings(
+            STORAGE_BACKEND="supabase",
+            SUPABASE_SERVICE_ROLE_KEY="test-service-role-key",
+        )
+
+
+def test_supabase_requires_service_role_key():
+    """Le mode Supabase exige une cl? de service non vide."""
+
+    with pytest.raises(ValidationError):
+        make_settings(
+            STORAGE_BACKEND="supabase",
+            SUPABASE_URL="https://example.supabase.co",
+            SUPABASE_SERVICE_ROLE_KEY=" ",
+        )
+
+
+@pytest.mark.parametrize(
+    "bucket",
+    [
+        "",
+        "ClientPulse-Avatars",
+        "clientpulse avatars",
+        "-clientpulse",
+        "clientpulse-",
+        "clientpulse/avatars",
+    ],
+)
+def test_invalid_supabase_bucket_names_are_rejected(bucket):
+    """Le nom du bucket doit respecter le format autoris?."""
+
+    with pytest.raises(ValidationError):
+        make_settings(SUPABASE_AVATARS_BUCKET=bucket)
+
+
+def test_supabase_storage_rejects_http_in_production():
+    """Supabase doit utiliser HTTPS en production."""
+
+    with pytest.raises(ValidationError):
+        make_settings(
+            ENVIRONMENT="production",
+            DEBUG=False,
+            SECRET_KEY=secrets.token_urlsafe(48),
+            DATABASE_URL=(
+                "postgresql+psycopg://user:password@localhost:5432/clientpulse"
+            ),
+            CORS_ORIGINS="https://clientpulse.example.com",
+            STORAGE_BACKEND="supabase",
+            SUPABASE_URL="http://example.supabase.co",
+            SUPABASE_SERVICE_ROLE_KEY="test-service-role-key",
+        )
+
+
+def test_supabase_service_role_key_is_hidden_from_repr():
+    """La cl? de service ne doit pas appara?tre dans repr(Settings)."""
+
+    secret = "test-service-role-key-do-not-display"
+
+    settings = make_settings(
+        STORAGE_BACKEND="supabase",
+        SUPABASE_URL="https://example.supabase.co",
+        SUPABASE_SERVICE_ROLE_KEY=secret,
+    )
+
+    assert secret not in repr(settings)

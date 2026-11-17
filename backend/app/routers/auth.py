@@ -258,12 +258,13 @@ def delete_my_avatar(
 @router.get(
     "/users/{user_id}/avatar",
 )
+
 def get_user_avatar(
     user_id: int,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Retourne l'avatar d'un utilisateur authentifié."""
+    """Retourne l'avatar d'un utilisateur authentifi?."""
 
     user = (
         db.query(User)
@@ -277,6 +278,55 @@ def get_user_avatar(
             detail="Avatar introuvable.",
         )
 
+    headers = {
+        "X-Content-Type-Options": "nosniff",
+        "Cache-Control": "private, max-age=300",
+    }
+
+    content_type = (
+        mimetypes.guess_type(user.avatar_path)[0]
+        or "application/octet-stream"
+    )
+
+    # En mode Supabase, l'avatar est r?cup?r? c?t? serveur.
+    # Le bucket reste priv? : aucune URL publique n'est expos?e.
+    if file_storage.settings.STORAGE_BACKEND == "supabase":
+        try:
+            content = file_storage.get_supabase_avatar(user.avatar_path)
+
+        except FileNotFoundError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Avatar introuvable.",
+            ) from exc
+
+        except ValueError as exc:
+            logger.warning(
+                "Cl? de stockage avatar invalide pour user_id=%s.",
+                user_id,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Avatar introuvable.",
+            ) from exc
+
+        except OSError as exc:
+            logger.exception(
+                "Erreur de lecture Supabase pour user_id=%s.",
+                user_id,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Impossible de lire cet avatar.",
+            ) from exc
+
+        return Response(
+            content=content,
+            media_type=content_type,
+            headers=headers,
+        )
+
+    # En mode local, le comportement historique est conserv?.
     try:
         avatar_path = file_storage.get_storage_path(
             "avatars",
@@ -291,10 +341,9 @@ def get_user_avatar(
 
     except ValueError as exc:
         logger.warning(
-            "Clé de stockage avatar invalide pour user_id=%s.",
+            "Cl? de stockage avatar invalide pour user_id=%s.",
             user_id,
         )
-
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Avatar introuvable.",
@@ -302,25 +351,16 @@ def get_user_avatar(
 
     except OSError as exc:
         logger.exception(
-            "Erreur d'accès au stockage avatar pour user_id=%s.",
+            "Erreur d'acc?s au stockage avatar pour user_id=%s.",
             user_id,
         )
-
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Impossible de lire cet avatar.",
         ) from exc
 
-    content_type = (
-        mimetypes.guess_type(avatar_path.name)[0]
-        or "application/octet-stream"
-    )
-
     return FileResponse(
         path=avatar_path,
         media_type=content_type,
-        headers={
-            "X-Content-Type-Options": "nosniff",
-            "Cache-Control": "private, max-age=300",
-        },
+        headers=headers,
     )

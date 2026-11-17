@@ -48,6 +48,12 @@ class Settings(BaseSettings):
     # Stockage privé des avatars et pièces jointes.
     STORAGE_DIR: Path = BASE_DIR / "storage"
 
+    # Configuration du stockage distant Supabase.
+    STORAGE_BACKEND: Literal["local", "supabase"] = "local"
+    SUPABASE_URL: str = ""
+    SUPABASE_SERVICE_ROLE_KEY: str = Field(default="", repr=False)
+    SUPABASE_AVATARS_BUCKET: str = "clientpulse-avatars"
+
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env",
         env_file_encoding="utf-8",
@@ -108,6 +114,60 @@ class Settings(BaseSettings):
 
         return value.strip()
 
+    @field_validator("STORAGE_BACKEND", mode="before")
+    @classmethod
+    def normalize_storage_backend(cls, value: str) -> str:
+        """Normalise le mode de stockage."""
+        if not isinstance(value, str):
+            raise ValueError("STORAGE_BACKEND doit ?tre une cha?ne.")
+        return value.strip().lower()
+
+    @field_validator("SUPABASE_URL")
+    @classmethod
+    def validate_supabase_url(cls, value: str) -> str:
+        """Valide l?URL racine du projet Supabase."""
+        if not isinstance(value, str):
+            raise ValueError("SUPABASE_URL doit ?tre une cha?ne.")
+        value = value.strip().rstrip("/")
+        if not value:
+            return ""
+        parsed = urlsplit(value)
+        try:
+            _ = parsed.port
+        except ValueError as exc:
+            raise ValueError("Port SUPABASE_URL invalide.") from exc
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path not in {"", "/"}
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("SUPABASE_URL doit ?tre une URL racine valide.")
+        return f"{parsed.scheme}://{parsed.netloc}"
+
+    @field_validator("SUPABASE_AVATARS_BUCKET")
+    @classmethod
+    def validate_supabase_bucket(cls, value: str) -> str:
+        """Valide un nom de bucket simple et pr?visible."""
+        if not isinstance(value, str):
+            raise ValueError("Le nom du bucket doit ?tre une cha?ne.")
+        value = value.strip()
+        valid_chars = all(
+            char.isascii() and (char.islower() or char.isdigit() or char in "-_")
+            for char in value
+        )
+        if (
+            not value
+            or len(value) > 100
+            or not value[0].isalnum()
+            or not value[-1].isalnum()
+            or not valid_chars
+        ):
+            raise ValueError("Nom de bucket Supabase invalide.")
+        return value
     @property
     def database_url(self) -> str:
         """Retourne l'URL normalisée utilisée par SQLAlchemy et Alembic."""
@@ -164,6 +224,24 @@ class Settings(BaseSettings):
 
         return origins
 
+    @model_validator(mode="after")
+    def validate_supabase_storage(self) -> "Settings":
+        """Exige les param?tres n?cessaires lorsque Supabase est activ?."""
+        if self.STORAGE_BACKEND == "supabase":
+            if not self.SUPABASE_URL:
+                raise ValueError("SUPABASE_URL est obligatoire avec Supabase.")
+            if not self.SUPABASE_SERVICE_ROLE_KEY.strip():
+                raise ValueError(
+                    "SUPABASE_SERVICE_ROLE_KEY est obligatoire avec Supabase."
+                )
+            if not self.SUPABASE_AVATARS_BUCKET:
+                raise ValueError("Le bucket Supabase est obligatoire.")
+            if self.ENVIRONMENT == "production":
+                if urlsplit(self.SUPABASE_URL).scheme != "https":
+                    raise ValueError(
+                        "SUPABASE_URL doit utiliser HTTPS en production."
+                    )
+        return self
     @model_validator(mode="after")
     def validate_production_settings(self) -> "Settings":
         """Applique les règles de sécurité en production."""

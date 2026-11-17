@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import asyncio
+
+import httpx
 import os
 import re
 import uuid
@@ -13,6 +15,7 @@ import zlib
 
 from dataclasses import dataclass
 from pathlib import Path, PurePath
+from urllib.parse import quote
 
 from fastapi import UploadFile
 from PIL import Image, UnidentifiedImageError
@@ -57,6 +60,135 @@ _INVALID_FILENAME_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 _STORAGE_KEY_PATTERN = re.compile(
     r"(?P<identifier>[a-f0-9]{32})(?P<extension>\.[a-z0-9]{2,5})"
 )
+
+
+
+
+# Timeout r?seau born? pour ?viter de bloquer ind?finiment les requ?tes.
+_SUPABASE_TIMEOUT = httpx.Timeout(20.0, connect=5.0)
+
+
+def _supabase_object_url(category: str, storage_key: str) -> str:
+    """Construit une URL Storage apr?s validation stricte de la cl?."""
+
+    if category != "avatars":
+        raise ValueError("Cat?gorie Supabase non prise en charge.")
+
+    if (
+        not isinstance(storage_key, str)
+        or re.fullmatch(r"[0-9a-f]{32}\.(?:jpg|png|webp)", storage_key) is None
+    ):
+        raise ValueError("Cl? de stockage invalide.")
+
+    bucket = settings.SUPABASE_AVATARS_BUCKET
+    if not bucket:
+        raise OSError("Configuration du stockage Supabase incompl?te.")
+
+    return (
+        f"{settings.SUPABASE_URL}/storage/v1/object/"
+        f"{quote(bucket, safe='')}/{quote(storage_key, safe='')}"
+    )
+
+
+def _supabase_headers(content_type: str | None = None) -> dict[str, str]:
+    """Construit les en-t?tes priv?s Supabase sans exposer la cl?."""
+
+    key = settings.SUPABASE_SERVICE_ROLE_KEY
+    if not settings.SUPABASE_URL or not key:
+        raise OSError("Configuration du stockage Supabase incompl?te.")
+
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "apikey": key,
+    }
+
+    if content_type:
+        headers["Content-Type"] = content_type
+
+    return headers
+
+
+async def _supabase_upload_avatar(
+    storage_key: str,
+    content: bytes,
+    content_type: str,
+) -> None:
+    """T?l?verse un avatar nettoy? dans le bucket priv?."""
+
+    url = _supabase_object_url("avatars", storage_key)
+    headers = _supabase_headers(content_type)
+    headers["x-upsert"] = "false"
+
+    try:
+        async with httpx.AsyncClient(timeout=_SUPABASE_TIMEOUT) as client:
+            response = await client.post(
+                url,
+                headers=headers,
+                content=content,
+            )
+            response.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise OSError(
+            "Le t?l?versement vers le stockage Supabase a ?chou?."
+        ) from exc
+
+
+def get_supabase_avatar(storage_key: str) -> bytes:
+    """T?l?charge un avatar depuis le bucket priv?."""
+
+    url = _supabase_object_url("avatars", storage_key)
+
+    try:
+        response = httpx.get(
+            url,
+            headers=_supabase_headers(),
+            timeout=_SUPABASE_TIMEOUT,
+        )
+
+        if response.status_code == 404:
+            raise FileNotFoundError("Avatar distant introuvable.")
+
+        response.raise_for_status()
+        return response.content
+
+    except FileNotFoundError:
+        raise
+    except httpx.HTTPError as exc:
+        raise OSError(
+            "La lecture depuis le stockage Supabase a ?chou?."
+        ) from exc
+
+
+def _delete_supabase_avatar(storage_key: str) -> None:
+    """Supprime un avatar du bucket priv? de mani?re idempotente."""
+
+    # R?utilise la validation stricte avant toute requ?te distante.
+    _supabase_object_url("avatars", storage_key)
+
+    url = (
+        f"{settings.SUPABASE_URL}/storage/v1/object/"
+        f"{quote(settings.SUPABASE_AVATARS_BUCKET, safe='')}"
+    )
+    payload = {"prefixes": [storage_key]}
+
+    try:
+        response = httpx.delete(
+            url,
+            headers=_supabase_headers(),
+            json=payload,
+            timeout=_SUPABASE_TIMEOUT,
+        )
+
+        # Une suppression r?p?t?e ne constitue pas une erreur.
+        if response.status_code == 404:
+            return
+
+        response.raise_for_status()
+
+    except httpx.HTTPError as exc:
+        raise OSError(
+            "La suppression dans le stockage Supabase a ?chou?."
+        ) from exc
 
 
 @dataclass(frozen=True)
@@ -371,16 +503,18 @@ def _validate_attachment(source: Path, extension: str) -> str:
 
 
 async def save_avatar(upload: UploadFile) -> StoredFile:
-    """Valide, nettoie et stocke un avatar."""
+    """Valide, nettoie et stocke un avatar en local ou sur Supabase."""
 
     directory: Path | None = None
     temporary_source: Path | None = None
     temporary_output: Path | None = None
+    final_path: Path | None = None
     storage_key: str | None = None
+    remote_uploaded = False
 
     try:
-        # La création du répertoire est dans le try afin de garantir
-        # la fermeture de l'upload même en cas d'erreur de stockage.
+        # Les fichiers temporaires restent locaux afin de conserver
+        # le m?me pipeline de validation et de nettoyage d'image.
         directory = _storage_directory("avatars")
 
         temporary_source = directory / f".{uuid.uuid4().hex}.upload"
@@ -411,20 +545,53 @@ async def save_avatar(upload: UploadFile) -> StoredFile:
         )
 
         storage_key = f"{uuid.uuid4().hex}{extension}"
-        final_path = directory / storage_key
 
-        os.replace(temporary_output, final_path)
+        if settings.STORAGE_BACKEND == "supabase":
+            # L'image a d?j? ?t? valid?e et r?encod?e.
+            # Sa taille est limit?e par AVATAR_MAX_SIZE.
+            content = await asyncio.to_thread(
+                temporary_output.read_bytes
+            )
+
+            await _supabase_upload_avatar(
+                storage_key,
+                content,
+                content_type,
+            )
+            remote_uploaded = True
+            size_bytes = len(content)
+
+        else:
+            # Comportement local historique, inchang?.
+            final_path = directory / storage_key
+            os.replace(temporary_output, final_path)
+            size_bytes = final_path.stat().st_size
 
         return StoredFile(
             storage_key=storage_key,
             original_filename=_safe_filename(upload.filename),
             content_type=content_type,
-            size_bytes=final_path.stat().st_size,
+            size_bytes=size_bytes,
         )
 
     except Exception:
-        if directory is not None and storage_key is not None:
-            (directory / storage_key).unlink(missing_ok=True)
+        # En cas d'?chec apr?s un upload distant r?ussi,
+        # tente de supprimer l'objet pour ?viter un orphelin.
+        if remote_uploaded and storage_key is not None:
+            try:
+                _delete_supabase_avatar(storage_key)
+            except OSError:
+                warnings.warn(
+                    "Impossible de nettoyer un avatar Supabase "
+                    "apr?s un ?chec de traitement.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+
+        # En mode local, supprime le fichier final ?ventuellement cr??.
+        if final_path is not None:
+            final_path.unlink(missing_ok=True)
+
         raise
 
     finally:
@@ -523,7 +690,16 @@ def get_storage_path(category: str, storage_key: str) -> Path:
 
 
 def delete_stored_file(category: str, storage_key: str) -> None:
-    """Supprime un fichier uniquement dans son répertoire autorisé."""
+    """Supprime un fichier local ou un avatar Supabase."""
 
+    # Seuls les avatars sont stock?s sur Supabase.
+    # La cl? est valid?e avant toute requ?te distante.
+    if category == "avatars" and settings.STORAGE_BACKEND == "supabase":
+        _supabase_object_url("avatars", storage_key)
+        _delete_supabase_avatar(storage_key)
+        return
+
+    # Les avatars en mode local et toutes les pi?ces jointes
+    # conservent le comportement de stockage local.
     path = get_storage_path(category, storage_key)
     path.unlink(missing_ok=True)
