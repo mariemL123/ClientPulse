@@ -94,7 +94,7 @@ def list_clients(
     if client_status:
         if client_status not in {"active", "inactive", "prospect"}:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Statut invalide : active, inactive ou prospect.",
             )
 
@@ -165,7 +165,7 @@ def update_client(
     if "name" in changes:
         if changes["name"] is None or not changes["name"].strip():
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Le nom ne peut pas être vide.",
             )
 
@@ -174,7 +174,7 @@ def update_client(
     if "email" in changes:
         if changes["email"] is None:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="L'email ne peut pas être nul.",
             )
 

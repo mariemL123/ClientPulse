@@ -22,5 +22,6 @@ slowapi==0.1.10
 # Tests
 pytest==9.2.0
 httpx==0.28.1
+httpx2==2.16.2
 
 Pillow==13.0.0

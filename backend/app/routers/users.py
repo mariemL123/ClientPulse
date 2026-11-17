@@ -550,7 +550,7 @@ def delete_user(
 
         if replacement.role != "agent" or not replacement.is_active:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="L'agent de remplacement doit être actif.",
             )
 

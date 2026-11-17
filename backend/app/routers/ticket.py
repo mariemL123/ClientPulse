@@ -49,7 +49,7 @@ def validate_assignment(assigned_to: str | None, db: Session) -> str | None:
 
     if len(agents) == 0:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Le responsable doit être un agent actif existant.",
         )
 
@@ -167,7 +167,7 @@ def list_tickets(
 
         if ticket_status not in allowed_statuses:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Statut de ticket invalide.",
             )
 
@@ -178,7 +178,7 @@ def list_tickets(
 
         if priority not in allowed_priorities:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Priorité invalide.",
             )
 
@@ -257,7 +257,7 @@ def update_ticket(
     if "title" in changes:
         if changes["title"] is None or not changes["title"].strip():
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Le titre ne peut pas être vide.",
             )
         changes["title"] = changes["title"].strip()
@@ -268,7 +268,7 @@ def update_ticket(
             or not changes["description"].strip()
         ):
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="La description ne peut pas être vide.",
             )
         changes["description"] = changes["description"].strip()
@@ -283,7 +283,7 @@ def update_ticket(
     if "status" in changes:
         if changes["status"] is None:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Le statut ne peut pas être nul.",
             )
 
@@ -296,7 +296,7 @@ def update_ticket(
 
     if "priority" in changes and changes["priority"] is None:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="La priorité ne peut pas être nulle.",
         )
 
