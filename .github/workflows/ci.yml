@@ -1,0 +1,109 @@
+name: ClientPulse CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  sqlite-tests:
+    name: SQLite tests
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: backend
+
+    env:
+      ENVIRONMENT: testing
+      DEBUG: "false"
+      DATABASE_URL: sqlite:///./clientpulse.db
+      SECRET_KEY: ci-only-secret-key-for-tests-at-least-32-characters
+      STORAGE_BACKEND: local
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Run SQLite test suite
+        run: python -m pytest tests -v
+
+  postgres-tests:
+    name: PostgreSQL integration tests
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_DB: clientpulse_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci-only-test-password-2026
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d clientpulse_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    defaults:
+      run:
+        working-directory: backend
+
+    env:
+      ENVIRONMENT: testing
+      DEBUG: "false"
+      DATABASE_URL: postgresql+psycopg://postgres:ci-only-test-password-2026@127.0.0.1:5432/clientpulse_test
+      SECRET_KEY: ci-only-secret-key-for-tests-at-least-32-characters
+      STORAGE_BACKEND: local
+      POSTGRES_TEST_PASSWORD: ci-only-test-password-2026
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Resolve PostgreSQL service IP
+        shell: bash
+        run: |
+          SERVICE_ID="${{ job.services.postgres.id }}"
+          SERVICE_IP="$(docker inspect "$SERVICE_ID" --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')"
+
+          if [ -z "$SERVICE_IP" ]; then
+            echo "Unable to determine PostgreSQL service IP."
+            exit 1
+          fi
+
+          echo "CLIENTPULSE_TEST_EXPECTED_SERVER_IP=$SERVICE_IP" >> "$GITHUB_ENV"
+
+      - name: Apply database migrations
+        run: python -m alembic upgrade head
+
+      - name: Run PostgreSQL integration tests
+        run: python -m pytest tests_postgres -v

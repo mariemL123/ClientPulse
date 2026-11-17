@@ -1,4 +1,6 @@
 from getpass import getpass
+import ipaddress
+import os
 
 import pytest
 from sqlalchemy import create_engine, inspect, text
@@ -28,9 +30,13 @@ REQUIRED_TABLES = {
 def postgres_engine():
     """Crée un moteur limité à la base PostgreSQL locale de test."""
 
-    password = getpass(
-        "Mot de passe PostgreSQL local (saisie masquée) : "
-    )
+    # Use an environment variable in CI; otherwise prompt locally.
+    password = os.environ.get("POSTGRES_TEST_PASSWORD")
+
+    if password is None:
+        password = getpass(
+            "Mot de passe PostgreSQL local (saisie masquée) : "
+        )
 
     if not password:
         pytest.fail("Le mot de passe PostgreSQL ne peut pas être vide.")
@@ -78,19 +84,22 @@ def postgres_engine():
             if database_user != DB_USER:
                 pytest.fail("Utilisateur PostgreSQL inattendu.")
 
-            import ipaddress
+            # The server IP may differ from the client host in CI.
+            expected_server = os.environ.get(
+                "CLIENTPULSE_TEST_EXPECTED_SERVER_IP",
+                DB_HOST,
+            )
 
-            # PostgreSQL peut retourner une adresse avec un préfixe CIDR.
             try:
                 actual_ip = ipaddress.ip_interface(server_address).ip
-                expected_ip = ipaddress.ip_address(DB_HOST)
-            except ValueError:
+                expected_ip = ipaddress.ip_address(expected_server)
+            except (TypeError, ValueError):
                 pytest.fail("Adresse IP du serveur PostgreSQL invalide.")
 
             if actual_ip != expected_ip or server_port != DB_PORT:
                 pytest.fail("Serveur PostgreSQL inattendu.")
 
-            # Vérifie que les migrations attendues sont déjà présentes.
+            # Verify the expected Alembic migration revision.
             revision = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one_or_none()
